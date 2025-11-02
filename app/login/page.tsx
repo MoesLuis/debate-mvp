@@ -11,7 +11,14 @@ export default function LoginPage() {
   async function handleSignIn(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    const { error } = await supabase.auth.signInWithOtp({ email });
+    const { error } = await supabase.auth.signInWithOtp({
+  email,
+  options: {
+    // EITHER use your production URL …
+    emailRedirectTo: "http://localhost:3000/",
+    // … OR comment this out entirely so Supabase uses Site URL by default.
+  },
+});
     if (error) setError(error.message);
     else setSent(true);
   }
