@@ -1,43 +1,20 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { useMemo } from "react";
 
-type Props = {
-  roomName: string;
-  displayName: string;
-};
+export default function JitsiRoom({ room, name }: { room: string; name: string }) {
+  // Pass your display name to Jitsi via URL hash params
+  const src = useMemo(() => {
+    const base = `https://meet.jit.si/${encodeURIComponent(room)}`;
+    const hash = `#userInfo.displayName=${encodeURIComponent(name || "Guest")}`;
+    return base + hash;
+  }, [room, name]);
 
-declare global {
-  interface Window { JitsiMeetExternalAPI: any }
-}
-
-export default function JitsiRoom({ roomName, displayName }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://meet.jit.si/external_api.js";
-    script.async = true;
-    script.onload = () => {
-      const domain = "meet.jit.si"; // free hosted Jitsi
-      const api = new window.JitsiMeetExternalAPI(domain, {
-        parentNode: containerRef.current!,
-        roomName,
-        userInfo: { displayName },
-        configOverwrite: {
-          startWithAudioMuted: true,
-        },
-        interfaceConfigOverwrite: {
-          SHOW_JITSI_WATERMARK: false,
-        },
-      });
-      // Cleanup when leaving page
-      return () => api.dispose?.();
-    };
-    document.body.appendChild(script);
-    return () => {
-      document.body.removeChild(script);
-    };
-  }, [roomName, displayName]);
-
-  return <div ref={containerRef} style={{ height: "80vh", width: "100%" }} />;
+  return (
+    <iframe
+      title="Jitsi Room"
+      src={src}
+      style={{ width: "100%", height: "80vh", border: 0, borderRadius: 12 }}
+      allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write; speaker-selection"
+    />
+  );
 }

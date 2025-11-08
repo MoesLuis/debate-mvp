@@ -1,35 +1,42 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import JitsiRoom from "@/components/JitsiRoom";
 
-export default function RoomPage({ params }: { params: { slug: string } }) {
-  const roomName = params.slug;
-  const [displayName, setDisplayName] = useState("Guest");
+export default function RoomPage() {
+  const router = useRouter();
+  const params = useParams<{ slug: string }>();
+  const [name, setName] = useState<string>("");
 
   useEffect(() => {
-    async function loadName() {
-      const { data: userData } = await supabase.auth.getUser();
-      const u = userData.user;
-      if (!u) {
-        setDisplayName("Guest");
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        router.replace("/login");
         return;
       }
-      // prefer profile handle; else email; else Guest
-      const { data: prof } = await supabase
+
+      // load saved handle for display name
+      const { data } = await supabase
         .from("profiles")
         .select("handle")
-        .eq("user_id", u.id)
+        .eq("user_id", user.id)
         .maybeSingle();
-      setDisplayName(prof?.handle || u.email || "Guest");
-    }
-    loadName();
-  }, []);
+
+      setName(data?.handle || user.email || "Guest");
+    })();
+  }, [router]);
+
+  const room = typeof params?.slug === "string" ? params.slug : "deb-test-123";
 
   return (
-    <main className="p-6">
-      <h1 className="text-2xl font-bold mb-4">Room: {roomName}</h1>
-      <JitsiRoom roomName={roomName} displayName={displayName} />
+    <main className="p-4">
+      <h1 className="text-xl font-semibold mb-3">Room: {room}</h1>
+      <JitsiRoom room={room} name={name} />
+      <p className="text-sm text-zinc-500 mt-2">
+        Tip: open this URL in another browser/device to simulate the second participant.
+      </p>
     </main>
   );
 }
