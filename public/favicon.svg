@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="48" fill="#0b0b0f"/>
+  <circle cx="88" cy="128" r="54" fill="none" stroke="#6ea8ff" stroke-width="18"/>
+  <path d="M152 88h64M152 128h64M152 168h64" stroke="#e5e7eb" stroke-width="18" stroke-linecap="round"/>
+  <text x="40" y="140" font-family="Inter,system-ui,Segoe UI,Arial" font-size="56" fill="#e5e7eb">D•M</text>
+</svg>

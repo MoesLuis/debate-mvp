@@ -2,19 +2,29 @@
 import { useMemo } from "react";
 
 export default function JitsiRoom({ room, name }: { room: string; name: string }) {
-  // Pass your display name to Jitsi via URL hash params
   const src = useMemo(() => {
     const base = `https://meet.jit.si/${encodeURIComponent(room)}`;
+    // Useful lightweight flags for public meet.jit.si
+    const query = [
+      "config.disableDeepLinking=true",           // don’t push to native mobile app
+      "config.prejoinConfig.enabled=true",        // show prejoin (device check)
+      "config.startWithAudioMuted=true",
+      "config.startWithVideoMuted=false",
+      "interfaceConfig.TOOLBAR_ALWAYS_VISIBLE=true",
+    ].join("&");
+
     const hash = `#userInfo.displayName=${encodeURIComponent(name || "Guest")}`;
-    return base + hash;
+    return `${base}?${query}${hash}`;
   }, [room, name]);
 
   return (
-    <iframe
-      title="Jitsi Room"
-      src={src}
-      style={{ width: "100%", height: "80vh", border: 0, borderRadius: 12 }}
-      allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write; speaker-selection"
-    />
+    <div className="w-full" style={{ height: "calc(100dvh - 140px)" }}>
+      <iframe
+        title="Jitsi Room"
+        src={src}
+        className="w-full h-full rounded-xl border border-zinc-800"
+        allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write; speaker-selection"
+      />
+    </div>
   );
 }

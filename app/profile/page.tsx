@@ -19,7 +19,7 @@ export default function Profile() {
     })();
   }, []);
 
-  async function save() {
+  async function saveHandle() {
     setMsg(null);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -39,9 +39,13 @@ export default function Profile() {
         onChange={(e) => setHandle(e.target.value)}
         placeholder="Your handle"
       />
-      <button onClick={save} className="rounded bg-black text-white px-3 py-1">
-        Save
-      </button>
+      <button
+         onClick={saveHandle}
+         className="rounded bg-white/10 hover:bg-white/15 text-white px-4 py-2 disabled:opacity-50"
+         disabled={!handle.trim()}
+       >
+          Save
+       </button>
       {msg && <p>{msg}</p>}
     </main>
   );
