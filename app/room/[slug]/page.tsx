@@ -6,7 +6,7 @@ import JitsiRoom from "@/components/JitsiRoom";
 
 export default function RoomPage() {
   const router = useRouter();
-  const params = useParams<{ slug: string }>();
+  const { slug } = useParams<{ slug: string }>();
   const [name, setName] = useState<string>("");
 
   useEffect(() => {
@@ -28,7 +28,7 @@ export default function RoomPage() {
     })();
   }, [router]);
 
-  const room = typeof params?.slug === "string" ? params.slug : "deb-test-123";
+  const room = typeof slug === "string" ? slug : "deb-test-123";
 
   if (!name) {
    return <p className="text-sm text-zinc-400">Loading room…</p>;
