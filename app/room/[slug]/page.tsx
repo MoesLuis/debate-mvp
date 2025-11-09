@@ -30,6 +30,10 @@ export default function RoomPage() {
 
   const room = typeof params?.slug === "string" ? params.slug : "deb-test-123";
 
+  if (!name) {
+   return <p className="text-sm text-zinc-400">Loading room…</p>;
+  }
+
   return (
     <main className="p-4">
       <h1 className="text-xl font-semibold mb-3">Room: {room}</h1>

@@ -3,7 +3,7 @@ import { useMemo } from "react";
 
 export default function JitsiRoom({ room, name }: { room: string; name: string }) {
   const src = useMemo(() => {
-    const base = `https://meet.jit.si/${encodeURIComponent(room)}`;
+    const base = `https://8x8.vc/debateme/${encodeURIComponent(room)}`;
     // Useful lightweight flags for public meet.jit.si
     const query = [
       "config.disableDeepLinking=true",           // don’t push to native mobile app
