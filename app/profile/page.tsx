@@ -39,13 +39,19 @@ export default function Profile() {
         onChange={(e) => setHandle(e.target.value)}
         placeholder="Your handle"
       />
+
+      {/* Add this muted caption line here */}
+      <p className="text-xs text-[var(--muted)] mt-1">
+        This name will appear in the video room.
+      </p>
+
       <button
-         onClick={saveHandle}
-         className="rounded bg-white/10 hover:bg-white/15 text-white px-4 py-2 disabled:opacity-50"
-         disabled={!handle.trim()}
-       >
-          Save
-       </button>
+        onClick={saveHandle}
+        className="rounded bg-white/10 hover:bg-white/15 text-white px-4 py-2 disabled:opacity-50"
+        disabled={!handle.trim()}
+      >
+        Save
+      </button>
       {msg && <p>{msg}</p>}
     </main>
   );

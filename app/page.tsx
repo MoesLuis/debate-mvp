@@ -56,18 +56,18 @@ export default function Home() {
               Signed in as <b>{email}</b>
             </span>
             <button
-              onClick={signOut}
-              className="rounded bg-black text-white px-3 py-1"
+             onClick={signOut}
+             className="rounded px-3 py-1 bg-[var(--brand)] text-black hover:opacity-90"
             >
               Sign out
             </button>
           </div>
         ) : (
           <a
-            href="/login"
-            className="inline-block rounded bg-black text-white px-3 py-1"
+           href="/login"
+           className="inline-block rounded px-3 py-1 bg-[var(--brand)] text-black hover:opacity-90"
           >
-            Sign in
+           Sign in
           </a>
         )}
 
@@ -98,9 +98,8 @@ export default function Home() {
           >
             Join test room
           </a>
-          <p className="text-sm text-zinc-500 mt-2">
-            Open this link in two different browsers (or devices) to see both
-            participants.
+          <p className="text-sm text-[var(--muted)] mt-2">
+           Open this link in two different browsers (or devices) to see both participants.
           </p>
         </div>
       </div>

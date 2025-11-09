@@ -20,7 +20,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${inter.className} bg-zinc-950 text-zinc-100`}>
         <header className="sticky top-0 z-50 border-b border-zinc-800 bg-zinc-950/80 backdrop-blur">
           <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
-            <a href="/" className="font-semibold">Debate.Me</a>
+            <a href="/" className="font-semibold text-[var(--text)] hover:text-[var(--brand)]">
+             Debate.Me
+            </a>
             <nav className="text-sm space-x-4">
               <a className="text-zinc-300 hover:text-white" href="/profile">Profile</a>
               <a className="text-zinc-300 hover:text-white" href="/room/deb-test-123">Room</a>

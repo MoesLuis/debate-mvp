@@ -22,7 +22,7 @@ export default function JitsiRoom({ room, name }: { room: string; name: string }
       <iframe
         title="Jitsi Room"
         src={src}
-        className="w-full h-full rounded-xl border border-zinc-800"
+        className="w-full h-full rounded-xl border border-zinc-800 shadow-[0_0_0_1px_rgba(255,255,255,0.03)]"
         allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write; speaker-selection"
       />
     </div>
