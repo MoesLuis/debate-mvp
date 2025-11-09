@@ -4,8 +4,8 @@ import { useMemo } from "react";
 export default function JitsiRoom({ room, name }: { room: string; name: string }) {
   const src = useMemo(() => {
     // Choose ONE base:
-    // const base = `https://meet.jit.si/${encodeURIComponent(room)}`;
-    const base = `https://8x8.vc/debateme/${encodeURIComponent(room)}`; // optional alternative
+    const base = `https://meet.jit.si/${encodeURIComponent(room)}`;
+    // const base = `https://8x8.vc/debateme/${encodeURIComponent(room)}`; // optional alternative
 
     const query = [
       "config.disableDeepLinking=true",    // keep users in the web app on mobile
