@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import TopicSelector from "@/components/TopicSelector";
 
 export default function Profile() {
   const [handle, setHandle] = useState("");
@@ -53,6 +54,8 @@ export default function Profile() {
         Save
       </button>
       {msg && <p>{msg}</p>}
+      
+    <TopicSelector />
     </main>
   );
 }

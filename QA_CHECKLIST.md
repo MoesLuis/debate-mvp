@@ -33,3 +33,4 @@
 - …
 - Website little icon doesn’t appear in iphone, instead the vercel one does
 - When loading into a room, it says "The conference has not yet started because no moderators have yet arrived... and then asks me to log in"
+- In iphone, in the welcome screen after signing in, the save button on the right od the space where you enter your username, in iPhone is barely over the gray rectangle that surrounds that section, like the edge of the save button is barely over the line when it should be entirely inside
