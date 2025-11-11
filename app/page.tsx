@@ -6,6 +6,9 @@ export default function Home() {
   const [email, setEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [handle, setHandle] = useState("");
+  const [trending, setTrending] = useState<
+  { name: string; count: number }[]
+>([]);
 
   useEffect(() => {
     // Load auth + existing profile handle if any
@@ -30,6 +33,30 @@ export default function Home() {
     });
     return () => sub.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    // To load trending topics
+  async function loadTrending() {
+    const { data, error: _e } = await supabase
+      .from("topics")
+      .select("id, name, user_topics(count)")
+      .order("user_topics", {
+        ascending: false,
+        foreignTable: "user_topics",
+      })
+      .limit(5);
+    if (data) {
+      setTrending(
+        data.map((t: any) => ({
+          name: t.name,
+          count: (t.user_topics[0] as any)?.count ?? 0,
+        }))
+      );
+    }
+  }
+  loadTrending();
+}, []);
+
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -103,6 +130,19 @@ export default function Home() {
           </p>
         </div>
       </div>
+      
+      {trending.length > 0 && (
+  <div className="mt-8">
+    <h2 className="text-xl font-semibold mb-3">Trending topics</h2>
+    <ul className="list-disc ml-5 space-y-1">
+      {trending.map((t) => (
+        <li key={t.name}>
+          {t.name} – {t.count} debaters
+        </li>
+      ))}
+    </ul>
+  </div>
+)}
     </main>
   );
 }
