@@ -124,10 +124,11 @@ export default function Home() {
       return;
     }
 
-    // 2) Put myself in the queue
+        // 2) Put myself in the queue (start everyone at rating 1000 for now)
     const { error: upsertErr } = await supabase
       .from("queue")
-      .upsert({ user_id: userId });
+      .upsert({ user_id: userId, rating: 1000 });
+
 
     if (upsertErr) {
       setFindMsg(`Error joining the queue: ${upsertErr.message}`);
