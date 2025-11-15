@@ -124,10 +124,18 @@ export default function Home() {
       return;
     }
 
-    // 2) Put myself in the queue (ignore duplicate errors)
-    await supabase.from("queue").upsert({ user_id: userId }).select();
+    // 2) Put myself in the queue
+    const { error: upsertErr } = await supabase
+      .from("queue")
+      .upsert({ user_id: userId });
 
-    // 3) Get other queued users (oldest first)
+    if (upsertErr) {
+      setFindMsg(`Error joining the queue: ${upsertErr.message}`);
+      setFinding(false);
+      return;
+    }
+
+        // 3) Get other queued users (oldest first)
     const { data: queued, error: queueErr } = await supabase
       .from("queue")
       .select("user_id, inserted_at")
@@ -135,7 +143,7 @@ export default function Home() {
       .order("inserted_at", { ascending: true });
 
     if (queueErr) {
-      setFindMsg("Error reading the queue.");
+      setFindMsg(`Error reading the queue: ${queueErr.message}`);
       setFinding(false);
       return;
     }
@@ -147,6 +155,7 @@ export default function Home() {
       setFinding(false);
       return;
     }
+
 
     const otherIds = queued.map((q: any) => q.user_id);
 
