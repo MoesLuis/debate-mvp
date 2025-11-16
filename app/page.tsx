@@ -95,129 +95,29 @@ export default function Home() {
 
   // 🔍 Simple matchmaking based on overlapping topics
   async function findMatch() {
-    setFindMsg(null);
-    setMatchSlug(null);
+  setFinding(true);
+  setFindMsg(null);
+  setMatchSlug(null);
 
-    if (!userId) {
-      setFindMsg("Please sign in first.");
-      return;
-    }
+  const res = await fetch("/api/find-partner", { method: "POST" });
+  const body = await res.json();
 
-    setFinding(true);
-
-    // 1) Load my topics
-    const { data: myTopicsData, error: myTopicsErr } = await supabase
-      .from("user_topics")
-      .select("topic_id")
-      .eq("user_id", userId);
-
-    if (myTopicsErr) {
-      setFindMsg("Error loading your topics.");
-      setFinding(false);
-      return;
-    }
-
-    const myTopicIds = (myTopicsData || []).map((r: any) => Number(r.topic_id));
-    if (myTopicIds.length === 0) {
-      setFindMsg("Select at least one topic on your profile first.");
-      setFinding(false);
-      return;
-    }
-
-        // 2) Put myself in the queue (start everyone at rating 1000 for now)
-    const { error: upsertErr } = await supabase
-      .from("queue")
-      .upsert({ user_id: userId, rating: 1000 });
-
-
-    if (upsertErr) {
-      setFindMsg(`Error joining the queue: ${upsertErr.message}`);
-      setFinding(false);
-      return;
-    }
-
-        // 3) Get other queued users (oldest first)
-    const { data: queued, error: queueErr } = await supabase
-      .from("queue")
-      .select("user_id, inserted_at")
-      .neq("user_id", userId)
-      .order("inserted_at", { ascending: true });
-
-    if (queueErr) {
-      setFindMsg(`Error reading the queue: ${queueErr.message}`);
-      setFinding(false);
-      return;
-    }
-
-    if (!queued || queued.length === 0) {
-      setFindMsg(
-        "No one is waiting yet. Leave this page open and try again in a bit."
-      );
-      setFinding(false);
-      return;
-    }
-
-
-    const otherIds = queued.map((q: any) => q.user_id);
-
-    // 4) Load topics for all other queued users
-    const { data: otherTopics, error: otherErr } = await supabase
-      .from("user_topics")
-      .select("user_id, topic_id")
-      .in("user_id", otherIds);
-
-    if (otherErr) {
-      setFindMsg("Error loading others' topics.");
-      setFinding(false);
-      return;
-    }
-
-    // 5) Find first queued user with at least one overlapping topic
-    let partnerId: string | null = null;
-
-    for (const candidateId of otherIds) {
-      const topicsForCandidate = (otherTopics || []).filter(
-        (row: any) => row.user_id === candidateId
-      );
-      const candidateTopicIds = topicsForCandidate.map((r: any) =>
-        Number(r.topic_id)
-      );
-      const overlap = candidateTopicIds.some((id: number) =>
-        myTopicIds.includes(id)
-      );
-      if (overlap) {
-        partnerId = candidateId;
-        break;
-      }
-    }
-
-    if (!partnerId) {
-      setFindMsg(
-        "Users are queued, but none share your topics yet. Try again soon."
-      );
-      setFinding(false);
-      return;
-    }
-
-    // 6) Create a simple unique room slug
-    const slug = `deb-${userId.slice(0, 6)}-${partnerId.slice(0, 6)}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}`;
-
-    // 7) Save the match
-    await supabase.from("matches").insert({
-      user1_id: userId,
-      user2_id: partnerId,
-      room_slug: slug,
-    });
-
-    // 8) Remove both users from queue
-    await supabase.from("queue").delete().in("user_id", [userId, partnerId]);
-
-    setMatchSlug(slug);
-    setFindMsg("Match found! Tap the button below to join the room.");
+  if (!res.ok) {
+    setFindMsg(body.error || "Server error");
     setFinding(false);
+    return;
   }
+
+  if (body.match) {
+    setMatchSlug(body.match);
+    setFindMsg("Match found!");
+  } else {
+    setFindMsg("Searching… waiting for another debater.");
+  }
+
+  setFinding(false);
+}
+
 
   return (
     <main className="p-6 space-y-6">
