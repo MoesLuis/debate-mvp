@@ -99,7 +99,21 @@ export default function Home() {
   setFindMsg(null);
   setMatchSlug(null);
 
-  const res = await fetch("/api/find-partner", { method: "POST" });
+  // First get the user from client-side supabase
+const {
+  data: { user },
+} = await supabase.auth.getUser();
+
+if (!user) {
+  alert("Please sign in first!");
+  return;
+}
+
+const res = await fetch("/api/find-partner", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ userId: user.id }),
+});
   const body = await res.json();
 
   if (!res.ok) {

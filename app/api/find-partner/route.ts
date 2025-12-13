@@ -2,28 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 import { nanoid } from "nanoid";
 
-// Helper to get current user
-async function getUserOrThrow() {
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
-
-  if (error || !user) {
-    throw new Error("Not authenticated");
-  }
-  return { user };
-}
-
 export async function POST(req: NextRequest) {
   try {
-    const { user } = await getUserOrThrow();
+    const { userId } = await req.json();
+    if (!userId) {
+       return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+}
 
     // 1. Check if user already has a match
     const { data: existing } = await supabase
       .from("matches")
       .select("room_slug")
-      .or(`player1.eq.${user.id},player2.eq.${user.id}`)
+      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
       .maybeSingle();
 
     if (existing?.room_slug) {
@@ -34,7 +24,7 @@ export async function POST(req: NextRequest) {
     const { data: myTopics } = await supabase
       .from("user_topics")
       .select("topic_id")
-      .eq("user_id", user.id);
+      .eq("user_id", userId);
 
     if (!myTopics || myTopics.length === 0) {
       return NextResponse.json(
@@ -47,7 +37,7 @@ export async function POST(req: NextRequest) {
     const { data: queued } = await supabase
       .from("queue")
       .select("user_id, topic_id")
-      .neq("user_id", user.id);
+      .neq("user_id", userId);
 
     let partnerId: string | null = null;
     let chosenTopic: string | null = null;
@@ -69,14 +59,14 @@ export async function POST(req: NextRequest) {
 
       await supabase.from("matches").insert({
         topic_id: chosenTopic,
-        player1: partnerId,
-        player2: user.id,
+        user_a: partnerId,
+        user_b: userId,
         room_slug: room,
       });
 
       // remove both from queue
       await supabase.from("queue").delete().in("user_id", [
-        user.id,
+        userId,
         partnerId,
       ]);
 
@@ -85,7 +75,7 @@ export async function POST(req: NextRequest) {
 
     // 5. Otherwise — queue myself
     await supabase.from("queue").upsert({
-      user_id: user.id,
+      user_id: userId,
       topic_id: myTopics[0].topic_id,
       rating: 1000,
       inserted_at: new Date(),
