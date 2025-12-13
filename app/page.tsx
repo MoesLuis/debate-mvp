@@ -93,45 +93,27 @@ export default function Home() {
     else setProfileMsg("Saved!");
   }
 
-  // 🔍 Simple matchmaking based on overlapping topics
   async function findMatch() {
-  setFinding(true);
-  setFindMsg(null);
-  setMatchSlug(null);
+    setFinding(true);
+    setFindMsg(null);
+    setMatchSlug(null);
 
-  // First get the user from client-side supabase
-const {
-  data: { user },
-} = await supabase.auth.getUser();
+    const res = await fetch("/api/find-partner", {
+      method: "POST",
+    });
+    const body = await res.json();
 
-if (!user) {
-  alert("Please sign in first!");
-  return;
-}
+    if (!res.ok) {
+      setFindMsg(body.error || "Server error");
+    } else if (body.match) {
+      setMatchSlug(body.match);
+    } else {
+      setFindMsg("Searching… waiting for another debater.");
+    }
 
-const res = await fetch("/api/find-partner", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ userId: user.id }),
-});
-  const body = await res.json();
-
-  if (!res.ok) {
-    setFindMsg(body.error || "Server error");
     setFinding(false);
-    return;
   }
-
-  if (body.match) {
-    setMatchSlug(body.match);
-    setFindMsg("Match found!");
-  } else {
-    setFindMsg("Searching… waiting for another debater.");
-  }
-
-  setFinding(false);
-}
-
+  
 
   return (
     <main className="p-6 space-y-6">
