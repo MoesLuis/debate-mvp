@@ -25,7 +25,11 @@ export default function Home() {
 
   // Load auth + profile handle
   useEffect(() => {
+    let cancelled = false;
+
     supabase.auth.getUser().then(async ({ data }) => {
+      if (cancelled) return;
+
       const u = data.user;
       setEmail(u?.email ?? null);
       setUserId(u?.id ?? null);
@@ -36,25 +40,34 @@ export default function Home() {
           .select("handle")
           .eq("user_id", u.id)
           .maybeSingle();
-        if (prof?.handle) setHandle(prof.handle);
+
+        if (!cancelled && prof?.handle) setHandle(prof.handle);
       }
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      if (cancelled) return;
       setEmail(session?.user?.email ?? null);
       setUserId(session?.user?.id ?? null);
     });
-    return () => sub.subscription.unsubscribe();
+
+    return () => {
+      cancelled = true;
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   // Load trending topics
   useEffect(() => {
+    let cancelled = false;
+
     async function loadTrending() {
       const { data, error } = await supabase
         .from("trending_topics")
         .select("id, name, user_count")
         .limit(5);
 
+      if (cancelled) return;
       if (error || !data) return;
 
       setTrending(
@@ -67,16 +80,20 @@ export default function Home() {
     }
 
     loadTrending();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function signOut() {
     await supabase.auth.signOut();
-    // Simple refresh to clear UI state
     window.location.href = "/login";
   }
 
   async function saveHandle() {
     setProfileMsg(null);
+
     if (!userId) {
       setProfileMsg("Please sign in first.");
       return;
@@ -85,6 +102,7 @@ export default function Home() {
       setProfileMsg("Enter a display name.");
       return;
     }
+
     const { error } = await supabase
       .from("profiles")
       .upsert({ user_id: userId, handle: handle.trim() });
@@ -94,26 +112,60 @@ export default function Home() {
   }
 
   async function findMatch() {
+    if (finding) return;
+
     setFinding(true);
     setFindMsg(null);
     setMatchSlug(null);
 
-    const res = await fetch("/api/find-partner", {
-      method: "POST",
-    });
-    const body = await res.json();
+    try {
+      // 1) grab session token from Supabase (browser)
+      const {
+        data: { session },
+        error: sessionErr,
+      } = await supabase.auth.getSession();
 
-    if (!res.ok) {
-      setFindMsg(body.error || "Server error");
-    } else if (body.match) {
-      setMatchSlug(body.match);
-    } else {
-      setFindMsg("Searching… waiting for another debater.");
+      if (sessionErr) {
+        setFindMsg(sessionErr.message);
+        return;
+      }
+
+      const token = session?.access_token;
+
+      if (!token) {
+        setFindMsg("Not signed in (no session). Please sign in again.");
+        return;
+      }
+
+      // 2) send token to your API route
+      const res = await fetch("/api/find-partner", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      // Handle non-JSON responses safely
+      let body: any = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = {};
+      }
+
+      if (!res.ok) {
+        setFindMsg(body?.error || `Server error (${res.status})`);
+      } else if (body?.match) {
+        setMatchSlug(body.match);
+      } else {
+        setFindMsg("Searching… waiting for another debater.");
+      }
+    } catch (err: any) {
+      setFindMsg(err?.message || "Network error");
+    } finally {
+      setFinding(false);
     }
-
-    setFinding(false);
   }
-  
 
   return (
     <main className="p-6 space-y-6">
@@ -211,11 +263,7 @@ export default function Home() {
         >
           {finding ? "Searching…" : "Find partner"}
         </button>
-        {findMsg && (
-          <p className="text-sm text-zinc-300 mt-2">
-            {findMsg}
-          </p>
-        )}
+        {findMsg && <p className="text-sm text-zinc-300 mt-2">{findMsg}</p>}
         {matchSlug && (
           <a
             href={`/room/${matchSlug}`}
