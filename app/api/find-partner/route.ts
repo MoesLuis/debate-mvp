@@ -41,25 +41,7 @@ export async function POST(req: NextRequest) {
 
     const userId = user.id;
 
-    // 4) If user is already matched, return that room immediately
-    const { data: existing, error: existingErr } = await supabaseAdmin
-      .from("matches")
-      .select("room_slug")
-      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
-      .maybeSingle();
-
-    if (existingErr) {
-      return NextResponse.json(
-        { error: existingErr.message },
-        { status: 500 }
-      );
-    }
-
-    if (existing?.room_slug) {
-      return NextResponse.json({ match: existing.room_slug });
-    }
-
-    // 5) Load the user’s selected topics (as the user, so RLS works)
+    // 4) Load the user’s selected topics FIRST (current truth)
     const { data: myTopics, error: topicsErr } = await supabaseAuthed
       .from("user_topics")
       .select("topic_id")
@@ -75,8 +57,41 @@ export async function POST(req: NextRequest) {
 
     const topicIds = myTopics.map((t) => t.topic_id);
 
+    // 5) Check if user is already in an ACTIVE match that still matches their topics
+    const { data: existingActive, error: existingErr } = await supabaseAdmin
+      .from("matches")
+      .select("id, room_slug, topic_id, status")
+      .or(`user_a.eq.${userId},user_b.eq.${userId}`)
+      .eq("status", "active")
+      .maybeSingle();
+
+    if (existingErr) {
+      return NextResponse.json(
+        { error: existingErr.message },
+        { status: 500 }
+      );
+    }
+
+    // If they have an active match AND that match topic is still one of their current topics, reuse it
+    if (
+      existingActive?.room_slug &&
+      existingActive?.topic_id != null &&
+      topicIds.includes(existingActive.topic_id)
+    ) {
+      return NextResponse.json({ match: existingActive.room_slug });
+    }
+
+    // OPTIONAL: If they have an active match but it no longer matches their topics,
+    // mark it completed so it stops hijacking matchmaking.
+    if (existingActive?.id && existingActive?.status === "active") {
+      await supabaseAdmin
+        .from("matches")
+        .update({ status: "completed" })
+        .eq("id", existingActive.id);
+    }
+
     // 6) Find ONE partner already in queue that shares at least one topic
-    //    (admin client so we can read queue freely)
+
     const { data: partnerRow, error: partnerErr } = await supabaseAdmin
       .from("queue")
       .select("user_id, topic_id")
@@ -91,9 +106,9 @@ export async function POST(req: NextRequest) {
     }
 
     // 7) If partner found, create match + remove both from queue
-    if (partnerRow?.user_id && partnerRow?.topic_id) {
+    if (partnerRow?.user_id && partnerRow?.topic_id != null) {
       const partnerId = partnerRow.user_id as string;
-      const chosenTopic = partnerRow.topic_id as string;
+      const chosenTopic = partnerRow.topic_id as any; // bigint vs string depends on your DB client typing
 
       const room = `deb-${nanoid(6)}`;
 
@@ -104,6 +119,8 @@ export async function POST(req: NextRequest) {
           user_b: userId,
           topic_id: chosenTopic,
           room_slug: room,
+          room_name: room,
+          status: "active",
         });
 
       if (insertMatchErr) {
@@ -112,6 +129,14 @@ export async function POST(req: NextRequest) {
           { status: 500 }
         );
       }
+
+      // 🔥 DEBUG LOG — confirms matchmaking succeeded
+      console.log("MATCH CREATED", {
+        room,
+        userA: partnerId,
+        userB: userId,
+        topic: chosenTopic,
+      });
 
       const { error: deleteQueueErr } = await supabaseAdmin
         .from("queue")
@@ -129,7 +154,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 8) Otherwise, add this user to queue (use their first topic for now)
-    //    NOTE: if queue.user_id is unique, this safely updates their row.
+    
     const { error: upsertErr } = await supabaseAdmin.from("queue").upsert(
       {
         user_id: userId,
