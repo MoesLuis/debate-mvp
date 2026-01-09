@@ -57,6 +57,36 @@ export default function Home() {
     };
   }, []);
 
+  // 🔥 REALTIME LISTENER: auto-update when a match is created for this user
+  useEffect(() => {
+    if (!userId) return;
+
+    const channel = supabase
+      .channel(`matches-for-${userId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "matches" },
+        (payload: any) => {
+          const row = payload.new;
+          if (!row) return;
+
+          const isMe = row.user_a === userId || row.user_b === userId;
+          if (!isMe) return;
+
+          if (row.status === "active" && row.room_slug) {
+            setMatchSlug(row.room_slug);
+            setFindMsg(null);
+            setFinding(false);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [userId]);
+
   // Load trending topics
   useEffect(() => {
     let cancelled = false;
@@ -119,7 +149,6 @@ export default function Home() {
     setMatchSlug(null);
 
     try {
-      // 1) grab session token from Supabase (browser)
       const {
         data: { session },
         error: sessionErr,
@@ -137,7 +166,6 @@ export default function Home() {
         return;
       }
 
-      // 2) send token to your API route
       const res = await fetch("/api/find-partner", {
         method: "POST",
         headers: {
@@ -145,7 +173,6 @@ export default function Home() {
         },
       });
 
-      // Handle non-JSON responses safely
       let body: any = null;
       try {
         body = await res.json();
@@ -193,7 +220,6 @@ export default function Home() {
           </a>
         )}
 
-        {/* Display name editor (only when signed in) */}
         {email && (
           <div className="mt-2">
             <label className="block text-sm mb-1">Display name</label>
@@ -214,13 +240,9 @@ export default function Home() {
             {profileMsg && (
               <p className="text-xs text-zinc-400 mt-1">{profileMsg}</p>
             )}
-            <p className="text-xs text-zinc-500 mt-1">
-              This name will appear in the video room.
-            </p>
           </div>
         )}
 
-        {/* Join the test room */}
         <div className="mt-6">
           <a
             href="/room/deb-test-123"
@@ -228,14 +250,9 @@ export default function Home() {
           >
             Join test room
           </a>
-          <p className="text-sm text-zinc-500 mt-2">
-            Open this link in two different browsers (or devices) to see both
-            participants.
-          </p>
         </div>
       </div>
 
-      {/* Trending topics */}
       {trending.length > 0 && (
         <section>
           <h2 className="text-xl font-semibold mb-2">Trending topics</h2>
@@ -249,13 +266,10 @@ export default function Home() {
         </section>
       )}
 
-      {/* Matchmaking section */}
       <section className="mt-4 p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
-        <h2 className="text-lg font-semibold mb-2">Find a debating partner</h2>
-        <p className="text-sm text-zinc-400 mb-3">
-          We’ll look for someone in the queue who shares at least one of your
-          topics.
-        </p>
+        <h2 className="text-lg font-semibold mb-2">
+          Find a debating partner
+        </h2>
         <button
           onClick={findMatch}
           disabled={finding}
