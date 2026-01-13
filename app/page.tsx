@@ -6,126 +6,354 @@ import { supabase } from "@/lib/supabase";
 type TrendingTopic = {
   id: number;
   name: string;
-  count: number;
+  count: number; // number of users who selected this topic (debaters)
 };
 
 export default function Home() {
+  const [email, setEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+
+  const [handle, setHandle] = useState("");
+  const [profileMsg, setProfileMsg] = useState<string | null>(null);
+
+  // Trending topics (popularity)
   const [trending, setTrending] = useState<TrendingTopic[]>([]);
+
+  // Live activity counts
+  const [waitingCount, setWaitingCount] = useState(0); // users in queue
+  const [debatingPeople, setDebatingPeople] = useState(0); // people currently in active rooms
+
+  // Matchmaking state
   const [finding, setFinding] = useState(false);
   const [findMsg, setFindMsg] = useState<string | null>(null);
   const [matchSlug, setMatchSlug] = useState<string | null>(null);
   const [activeTopic, setActiveTopic] = useState<string | null>(null);
-  const [waitingCount, setWaitingCount] = useState(0);
-  const [debatingCount, setDebatingCount] = useState(0);
 
+  // Load auth + profile handle
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      setUserId(data.user?.id ?? null);
+    let cancelled = false;
+
+    supabase.auth.getUser().then(async ({ data }) => {
+      if (cancelled) return;
+
+      const u = data.user;
+      setEmail(u?.email ?? null);
+      setUserId(u?.id ?? null);
+
+      if (u?.id) {
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("handle")
+          .eq("user_id", u.id)
+          .maybeSingle();
+
+        if (!cancelled && prof?.handle) setHandle(prof.handle);
+      }
     });
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      if (cancelled) return;
+      setEmail(session?.user?.email ?? null);
+      setUserId(session?.user?.id ?? null);
+    });
+
+    return () => {
+      cancelled = true;
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
-  // Realtime counts
+  // 🔥 REALTIME LISTENER: auto-update when a match is created for this user
   useEffect(() => {
-    async function loadCounts() {
-      const [{ count: waiting }, { count: debating }] = await Promise.all([
-        supabase.from("queue").select("*", { count: "exact", head: true }),
-        supabase
-          .from("matches")
-          .select("*", { count: "exact", head: true })
-          .eq("status", "active"),
-      ]);
-      setWaitingCount(waiting ?? 0);
-      setDebatingCount(debating ? debating * 2 : 0);
+    if (!userId) return;
+
+    const channel = supabase
+      .channel(`matches-for-${userId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "matches" },
+        (payload: any) => {
+          const row = payload.new;
+          if (!row) return;
+
+          const isMe = row.user_a === userId || row.user_b === userId;
+          if (!isMe) return;
+
+          if (row.status === "active" && row.room_slug) {
+            setMatchSlug(row.room_slug);
+            setFindMsg(null);
+            setFinding(false);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [userId]);
+
+  // Load trending topics (popularity counts)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTrending() {
+      const { data, error } = await supabase
+        .from("trending_topics")
+        .select("id, name, user_count")
+        .limit(5);
+
+      if (cancelled) return;
+      if (error || !data) return;
+
+      setTrending(
+        data.map((row: any) => ({
+          id: Number(row.id),
+          name: row.name,
+          count: Number(row.user_count), // debaters (selected topic)
+        }))
+      );
     }
-    loadCounts();
+
+    loadTrending();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Load trending
+  // Live counts: waiting (queue) + debating now (active matches)
   useEffect(() => {
-    supabase
-      .from("trending_topics")
-      .select("id, name, user_count")
-      .limit(5)
-      .then(({ data }) => {
-        if (!data) return;
-        setTrending(
-          data.map((r: any) => ({
-            id: Number(r.id),
-            name: r.name,
-            count: Number(r.user_count),
-          }))
-        );
-      });
+    let cancelled = false;
+
+    async function refreshLiveCounts() {
+      // waiting = number of users in queue
+      const { count: waiting } = await supabase
+        .from("queue")
+        .select("*", { count: "exact", head: true });
+
+      // debating now = number of active matches * 2 people per room
+      const { count: activeMatches } = await supabase
+        .from("matches")
+        .select("*", { count: "exact", head: true })
+        .eq("status", "active");
+
+      if (cancelled) return;
+
+      setWaitingCount(waiting ?? 0);
+      setDebatingPeople((activeMatches ?? 0) * 2);
+    }
+
+    refreshLiveCounts();
+
+    // Optional: keep it fresh every 8s
+    const t = setInterval(refreshLiveCounts, 8000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
   }, []);
 
-  async function queueForTopic(topic: TrendingTopic) {
+  async function signOut() {
+    await supabase.auth.signOut();
+    window.location.href = "/login";
+  }
+
+  async function saveHandle() {
+    setProfileMsg(null);
+
+    if (!userId) {
+      setProfileMsg("Please sign in first.");
+      return;
+    }
+    if (!handle.trim()) {
+      setProfileMsg("Enter a display name.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("profiles")
+      .upsert({ user_id: userId, handle: handle.trim() });
+
+    if (error) setProfileMsg(error.message);
+    else setProfileMsg("Saved!");
+  }
+
+  async function callFindPartner(topicId?: number, topicName?: string) {
+    if (finding) return;
+
     setFinding(true);
-    setActiveTopic(topic.name);
     setFindMsg(null);
+    setMatchSlug(null);
+    setActiveTopic(topicName ?? null);
 
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return;
+    try {
+      const {
+        data: { session },
+        error: sessionErr,
+      } = await supabase.auth.getSession();
 
-    const res = await fetch("/api/find-partner", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ topicId: topic.id }),
-    });
+      if (sessionErr) {
+        setFindMsg(sessionErr.message);
+        return;
+      }
 
-    const body = await res.json();
-    if (body?.match) setMatchSlug(body.match);
-    else setFindMsg("Waiting for another debater…");
-    setFinding(false);
+      const token = session?.access_token;
+      if (!token) {
+        setFindMsg("Not signed in (no session). Please sign in again.");
+        return;
+      }
+
+      const res = await fetch("/api/find-partner", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(topicId != null ? { topicId } : {}),
+      });
+
+      let body: any = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = {};
+      }
+
+      if (!res.ok) {
+        setFindMsg(body?.error || `Server error (${res.status})`);
+      } else if (body?.match) {
+        setMatchSlug(body.match);
+      } else {
+        setFindMsg("Searching… waiting for another debater.");
+      }
+    } catch (err: any) {
+      setFindMsg(err?.message || "Network error");
+    } finally {
+      setFinding(false);
+    }
   }
 
   return (
     <main className="p-6 space-y-6">
       <h1 className="text-3xl font-bold">Welcome to Debate.Me</h1>
 
-      <section>
-        <h2 className="text-xl font-semibold mb-2">Trending topics</h2>
-        <ul className="space-y-2">
-          {trending.map((t) => (
-            <li
-              key={t.id}
-              onClick={() => queueForTopic(t)}
-              className="cursor-pointer hover:text-emerald-400 transition"
+      {/* ✅ SIGN IN / SIGN OUT CARD (restored) */}
+      <div className="mt-4 p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
+        {email ? (
+          <div className="space-x-3 mb-3">
+            <span>
+              Signed in as <b>{email}</b>
+            </span>
+            <button
+              onClick={signOut}
+              className="rounded bg-zinc-800 text-white px-3 py-1"
             >
-              {t.name} — {t.count} debating
-            </li>
-          ))}
-        </ul>
-        <p className="text-sm text-zinc-400 mt-2">
-          {debatingCount} debating • {waitingCount} waiting
-        </p>
-      </section>
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <a
+            href="/login"
+            className="inline-block rounded bg-zinc-800 text-white px-3 py-1 mb-3"
+          >
+            Sign in
+          </a>
+        )}
 
-      <section className="p-4 border border-zinc-800 rounded-lg">
+        {/* Display name editor */}
+        {email && (
+          <div className="mt-2">
+            <label className="block text-sm mb-1">Display name</label>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                value={handle}
+                onChange={(e) => setHandle(e.target.value)}
+                placeholder="e.g., MoesLuis"
+                className="border border-zinc-700 rounded p-2 flex-1 bg-black/40"
+              />
+              <button
+                onClick={saveHandle}
+                className="rounded bg-zinc-800 text-white px-4 py-2"
+              >
+                Save
+              </button>
+            </div>
+            {profileMsg && (
+              <p className="text-xs text-zinc-400 mt-1">{profileMsg}</p>
+            )}
+          </div>
+        )}
+
+        <div className="mt-6">
+          <a
+            href="/room/deb-test-123"
+            className="inline-block rounded bg-zinc-800 text-white px-4 py-2"
+          >
+            Join test room
+          </a>
+        </div>
+      </div>
+
+      {/* ✅ TRENDING TOPICS (fixed labels) */}
+      {trending.length > 0 && (
+        <section>
+          <h2 className="text-xl font-semibold mb-2">Trending topics</h2>
+
+          {/* topic popularity list */}
+          <ul className="space-y-2 text-sm text-zinc-200">
+            {trending.map((t) => (
+              <li key={t.id}>
+                <button
+                  onClick={() => callFindPartner(t.id, t.name)}
+                  className="text-left hover:text-emerald-400 transition"
+                  disabled={finding}
+                  title="Click to queue for this topic"
+                >
+                  {t.name} — {t.count} debater{t.count === 1 ? "" : "s"}
+                </button>
+              </li>
+            ))}
+          </ul>
+
+          {/* live activity line */}
+          <p className="text-xs text-zinc-400 mt-3">
+            {debatingPeople} debating now • {waitingCount} waiting
+          </p>
+        </section>
+      )}
+
+      {/* ✅ FIND PARTNER AREA with nicer searching message */}
+      <section className="mt-4 p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
+        <h2 className="text-lg font-semibold mb-2">Find a debating partner</h2>
+
         <button
+          onClick={() => callFindPartner()}
           disabled={finding}
-          className="rounded bg-emerald-600 px-4 py-2 text-white disabled:opacity-60"
+          className="rounded bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2"
         >
           {finding ? "Searching…" : "Find partner"}
         </button>
 
         {finding && (
-          <p className="mt-2 animate-pulse text-zinc-300">
-            Looking for someone debating {activeTopic}…
-          </p>
+          <div className="mt-3 flex items-center gap-2 text-sm text-zinc-300 animate-pulse">
+            <span className="inline-block h-3 w-3 rounded-full bg-emerald-500" />
+            <span>
+              Looking for someone{" "}
+              {activeTopic ? `debating ${activeTopic}` : "to debate with"}…
+            </span>
+          </div>
         )}
 
-        {findMsg && <p className="mt-2">{findMsg}</p>}
+        {findMsg && <p className="text-sm text-zinc-300 mt-2">{findMsg}</p>}
 
         {matchSlug && (
           <a
             href={`/room/${matchSlug}`}
-            className="inline-block mt-3 underline"
+            className="inline-block mt-3 rounded bg-zinc-800 text-white px-4 py-2"
           >
-            Join match
+            Join matched room
           </a>
         )}
       </section>
