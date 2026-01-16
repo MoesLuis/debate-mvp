@@ -122,38 +122,31 @@ export default function Home() {
     };
   }, []);
 
-  // Live counts: waiting (queue) + debating now (active matches)
-  useEffect(() => {
-    let cancelled = false;
+  // Live counts: waiting + debating now (heartbeat-based)
+useEffect(() => {
+  let cancelled = false;
 
-    async function refreshLiveCounts() {
-      // waiting = number of users in queue
-      const { count: waiting } = await supabase
-        .from("queue")
-        .select("*", { count: "exact", head: true });
+  async function refreshLiveCounts() {
+    const { data, error } = await supabase
+      .from("live_counts")
+      .select("debating_people, waiting_people")
+      .maybeSingle();
 
-      // debating now = number of active matches * 2 people per room
-      const { count: activeMatches } = await supabase
-        .from("matches")
-        .select("*", { count: "exact", head: true })
-        .eq("status", "active");
+    if (cancelled) return;
+    if (error || !data) return;
 
-      if (cancelled) return;
+    setDebatingPeople(Number(data.debating_people ?? 0));
+    setWaitingCount(Number(data.waiting_people ?? 0));
+  }
 
-      setWaitingCount(waiting ?? 0);
-      setDebatingPeople((activeMatches ?? 0) * 2);
-    }
+  refreshLiveCounts();
+  const t = setInterval(refreshLiveCounts, 8000);
 
-    refreshLiveCounts();
-
-    // Optional: keep it fresh every 8s
-    const t = setInterval(refreshLiveCounts, 8000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, []);
+  return () => {
+    cancelled = true;
+    clearInterval(t);
+  };
+}, []);
 
   async function signOut() {
     await supabase.auth.signOut();
