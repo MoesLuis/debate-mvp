@@ -44,13 +44,6 @@ export default function SiteHeader() {
               >
                 Profile
               </a>
-              <a
-                className="text-zinc-300 hover:text-white"
-                href="/room/deb-test-123"
-                aria-label="Join test room"
-              >
-                Room
-              </a>
             </>
           )}
         </nav>

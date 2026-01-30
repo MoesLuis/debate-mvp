@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import JitsiRoom from "@/components/JitsiRoom";
@@ -10,17 +10,18 @@ type Outcome = "agreement" | "partial" | "no_agreement";
 export default function RoomPage() {
   const router = useRouter();
   const { slug } = useParams<{ slug: string }>();
-  const [name, setName] = useState<string>("");
+  const room = typeof slug === "string" ? slug : "";
 
-  const room = typeof slug === "string" ? slug : "deb-test-123";
-
-  // End debate modal state
+  const [name, setName] = useState("");
   const [showEnd, setShowEnd] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>("agreement");
   const [statement, setStatement] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitMsg, setSubmitMsg] = useState<string | null>(null);
 
+  const debateEndedRef = useRef(false);
+
+  // Auth + name
   useEffect(() => {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -39,97 +40,108 @@ export default function RoomPage() {
     })();
   }, [router]);
 
-  // 🔥 HEARTBEAT
+  // Heartbeat (unchanged)
   useEffect(() => {
-    let intervalId: number | null = null;
-    let cancelled = false;
+    let t: number;
 
-    async function sendHeartbeat() {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) return;
-
-        await fetch("/api/heartbeat", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ roomSlug: room }),
-          keepalive: true,
-        });
-      } catch {}
-    }
-
-    sendHeartbeat();
-    intervalId = window.setInterval(() => {
-      if (!cancelled) sendHeartbeat();
-    }, 15000);
-
-    return () => {
-      cancelled = true;
-      if (intervalId) window.clearInterval(intervalId);
-    };
-  }, [room]);
-
-  async function submitEndMatch() {
-    setSubmitMsg(null);
-
-    const trimmed = statement.trim();
-    if (trimmed.length < 10) {
-      setSubmitMsg("Please write at least a short statement (10+ characters).");
-      return;
-    }
-
-    setSubmitting(true);
-    try {
+    async function heartbeat() {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        setSubmitMsg("Not signed in. Please sign in again.");
-        setSubmitting(false);
-        return;
-      }
+      if (!session) return;
 
-      const res = await fetch("/api/end-match", {
+      await fetch("/api/heartbeat", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${session.access_token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          roomSlug: room,
-          outcome,
-          statement: trimmed,
-        }),
+        body: JSON.stringify({ roomSlug: room }),
+        keepalive: true,
       });
+    }
 
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setSubmitMsg(body?.error || `Server error (${res.status})`);
-        setSubmitting(false);
+    heartbeat();
+    t = window.setInterval(heartbeat, 15000);
+    return () => clearInterval(t);
+  }, [room]);
+
+  // 🔒 INTERCEPT BACK / REFRESH / TAB CLOSE
+  useEffect(() => {
+    function beforeUnload(e: BeforeUnloadEvent) {
+      if (debateEndedRef.current) return;
+
+      e.preventDefault();
+      e.returnValue =
+        "Leaving without ending the debate will apply a 5% rating penalty.";
+      return e.returnValue;
+    }
+
+    async function handleForfeit() {
+      if (debateEndedRef.current) return;
+
+      const confirmLeave = window.confirm(
+        "Are you sure you want to leave?\n\nLeaving without ending the debate will result in a 5% penalty to your profile score."
+      );
+
+      if (!confirmLeave) {
+        router.push(`/room/${room}`);
         return;
       }
 
-      setSubmitMsg("Submitted! You can now close this room.");
-    } catch (e: any) {
-      setSubmitMsg(e?.message || "Network error");
-    } finally {
-      setSubmitting(false);
+      debateEndedRef.current = true;
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      await fetch("/api/forfeit-match", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ roomSlug: room }),
+        keepalive: true,
+      });
     }
+
+    window.addEventListener("beforeunload", beforeUnload);
+    window.addEventListener("popstate", handleForfeit);
+
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      window.removeEventListener("popstate", handleForfeit);
+    };
+  }, [room, router]);
+
+  // Normal end debate
+  async function submitEndMatch() {
+    debateEndedRef.current = true;
+    setSubmitting(true);
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+
+    await fetch("/api/end-match", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ roomSlug: room, outcome, statement }),
+    });
+
+    setSubmitMsg("Debate ended. You may now close this page.");
+    setSubmitting(false);
   }
 
-  if (!name) {
-    return <p className="text-sm text-zinc-400">Loading room…</p>;
-  }
+  if (!name) return <p className="text-zinc-400">Loading…</p>;
 
   return (
     <main className="p-4">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex justify-between mb-3">
         <h1 className="text-xl font-semibold">Room: {room}</h1>
-
         <button
           onClick={() => setShowEnd(true)}
-          className="rounded bg-zinc-800 text-white px-3 py-2 hover:bg-zinc-700"
+          className="bg-zinc-800 px-3 py-2 rounded"
         >
           End debate
         </button>
@@ -137,49 +149,34 @@ export default function RoomPage() {
 
       <JitsiRoom room={room} name={name} />
 
-      {/* End Debate Modal */}
       {showEnd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-lg rounded-lg border border-zinc-800 bg-zinc-950 p-4">
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center">
+          <div className="bg-zinc-950 p-4 rounded max-w-lg w-full">
             <h2 className="text-lg font-semibold">End debate</h2>
 
-            <label className="block mt-3 text-sm">
-              Outcome
-              <select
-                value={outcome}
-                onChange={(e) => setOutcome(e.target.value as Outcome)}
-                className="mt-1 w-full rounded border border-zinc-700 bg-black/40 p-2"
-              >
-                <option value="agreement">Agreement reached</option>
-                <option value="partial">Partial agreement</option>
-                <option value="no_agreement">No agreement</option>
-              </select>
-            </label>
+            <select
+              className="w-full mt-2"
+              value={outcome}
+              onChange={(e) => setOutcome(e.target.value as Outcome)}
+            >
+              <option value="agreement">Agreement reached</option>
+              <option value="partial">Partial agreement</option>
+              <option value="no_agreement">No agreement</option>
+            </select>
 
-            <label className="block mt-3 text-sm">
-              Agreement statement
-              <textarea
-                value={statement}
-                onChange={(e) => setStatement(e.target.value)}
-                className="mt-1 w-full rounded border border-zinc-700 bg-black/40 p-2 min-h-[110px]"
-              />
-            </label>
+            <textarea
+              className="w-full mt-2"
+              placeholder="Agreement summary"
+              value={statement}
+              onChange={(e) => setStatement(e.target.value)}
+            />
 
-            {submitMsg && <p className="mt-2 text-sm">{submitMsg}</p>}
+            {submitMsg && <p className="mt-2">{submitMsg}</p>}
 
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={() => setShowEnd(false)}
-                className="rounded bg-zinc-900 px-3 py-2 border border-zinc-700"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={submitEndMatch}
-                disabled={submitting}
-                className="rounded bg-emerald-600 px-4 py-2 text-white"
-              >
-                {submitting ? "Submitting…" : "Submit result"}
+            <div className="flex justify-end mt-3 gap-2">
+              <button onClick={() => setShowEnd(false)}>Cancel</button>
+              <button onClick={submitEndMatch} disabled={submitting}>
+                Submit
               </button>
             </div>
           </div>
