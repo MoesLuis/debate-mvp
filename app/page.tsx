@@ -291,15 +291,30 @@ export default function Home() {
             </p>
 
             <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={() => {
-                  setShowGate(false);
-                  setPendingRoom(null);
-                }}
-                className="rounded bg-zinc-900 px-3 py-2"
-              >
-                Cancel ❌
-              </button>
+<button
+  onClick={async () => {
+    if (pendingRoom) {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        await fetch("/api/cancel-match", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ roomSlug: pendingRoom }),
+        });
+      }
+    }
+
+    setShowGate(false);
+    setPendingRoom(null);
+    setMatchSlug(null);
+  }}
+  className="rounded bg-zinc-900 px-3 py-2"
+>
+  Cancel
+</button>
               <a
                 href={`/room/${pendingRoom}`}
                 className="rounded bg-emerald-600 px-4 py-2 text-white"
