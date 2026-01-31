@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabase";
 type TrendingTopic = {
   id: number;
   name: string;
-  count: number; // number of users who selected this topic (debaters)
+  count: number;
 };
 
 export default function Home() {
@@ -16,20 +16,20 @@ export default function Home() {
   const [handle, setHandle] = useState("");
   const [profileMsg, setProfileMsg] = useState<string | null>(null);
 
-  // Trending topics (popularity)
   const [trending, setTrending] = useState<TrendingTopic[]>([]);
+  const [waitingCount, setWaitingCount] = useState(0);
+  const [debatingPeople, setDebatingPeople] = useState(0);
 
-  // Live activity counts
-  const [waitingCount, setWaitingCount] = useState(0); // users in queue
-  const [debatingPeople, setDebatingPeople] = useState(0); // people currently in active rooms
-
-  // Matchmaking state
   const [finding, setFinding] = useState(false);
   const [findMsg, setFindMsg] = useState<string | null>(null);
   const [matchSlug, setMatchSlug] = useState<string | null>(null);
   const [activeTopic, setActiveTopic] = useState<string | null>(null);
 
-  // Load auth + profile handle
+  // 🔒 Interstitial modal state
+  const [showGate, setShowGate] = useState(false);
+  const [pendingRoom, setPendingRoom] = useState<string | null>(null);
+
+  // Auth + profile
   useEffect(() => {
     let cancelled = false;
 
@@ -63,7 +63,7 @@ export default function Home() {
     };
   }, []);
 
-  // 🔥 REALTIME LISTENER: auto-update when a match is created for this user
+  // Realtime: auto-detect match creation
   useEffect(() => {
     if (!userId) return;
 
@@ -81,8 +81,8 @@ export default function Home() {
 
           if (row.status === "active" && row.room_slug) {
             setMatchSlug(row.room_slug);
-            setFindMsg(null);
             setFinding(false);
+            setFindMsg(null);
           }
         }
       )
@@ -93,60 +93,47 @@ export default function Home() {
     };
   }, [userId]);
 
-  // Load trending topics (popularity counts)
+  // Trending topics
+  useEffect(() => {
+    supabase
+      .from("trending_topics")
+      .select("id, name, user_count")
+      .limit(5)
+      .then(({ data }) => {
+        if (!data) return;
+        setTrending(
+          data.map((row: any) => ({
+            id: Number(row.id),
+            name: row.name,
+            count: Number(row.user_count),
+          }))
+        );
+      });
+  }, []);
+
+  // Live counts
   useEffect(() => {
     let cancelled = false;
 
-    async function loadTrending() {
-      const { data, error } = await supabase
-        .from("trending_topics")
-        .select("id, name, user_count")
-        .limit(5);
+    async function refresh() {
+      const { data } = await supabase
+        .from("live_counts")
+        .select("debating_people, waiting_people")
+        .maybeSingle();
 
-      if (cancelled) return;
-      if (error || !data) return;
-
-      setTrending(
-        data.map((row: any) => ({
-          id: Number(row.id),
-          name: row.name,
-          count: Number(row.user_count), // debaters (selected topic)
-        }))
-      );
+      if (!cancelled && data) {
+        setDebatingPeople(Number(data.debating_people ?? 0));
+        setWaitingCount(Number(data.waiting_people ?? 0));
+      }
     }
 
-    loadTrending();
-
+    refresh();
+    const t = setInterval(refresh, 8000);
     return () => {
       cancelled = true;
+      clearInterval(t);
     };
   }, []);
-
-  // Live counts: waiting + debating now (heartbeat-based)
-useEffect(() => {
-  let cancelled = false;
-
-  async function refreshLiveCounts() {
-    const { data, error } = await supabase
-      .from("live_counts")
-      .select("debating_people, waiting_people")
-      .maybeSingle();
-
-    if (cancelled) return;
-    if (error || !data) return;
-
-    setDebatingPeople(Number(data.debating_people ?? 0));
-    setWaitingCount(Number(data.waiting_people ?? 0));
-  }
-
-  refreshLiveCounts();
-  const t = setInterval(refreshLiveCounts, 8000);
-
-  return () => {
-    cancelled = true;
-    clearInterval(t);
-  };
-}, []);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -155,22 +142,13 @@ useEffect(() => {
 
   async function saveHandle() {
     setProfileMsg(null);
-
-    if (!userId) {
-      setProfileMsg("Please sign in first.");
-      return;
-    }
-    if (!handle.trim()) {
-      setProfileMsg("Enter a display name.");
-      return;
-    }
+    if (!userId || !handle.trim()) return;
 
     const { error } = await supabase
       .from("profiles")
       .upsert({ user_id: userId, handle: handle.trim() });
 
-    if (error) setProfileMsg(error.message);
-    else setProfileMsg("Saved!");
+    setProfileMsg(error ? error.message : "Saved!");
   }
 
   async function callFindPartner(topicId?: number, topicName?: string) {
@@ -181,95 +159,60 @@ useEffect(() => {
     setMatchSlug(null);
     setActiveTopic(topicName ?? null);
 
-    try {
-      const {
-        data: { session },
-        error: sessionErr,
-      } = await supabase.auth.getSession();
-
-      if (sessionErr) {
-        setFindMsg(sessionErr.message);
-        return;
-      }
-
-      const token = session?.access_token;
-      if (!token) {
-        setFindMsg("Not signed in (no session). Please sign in again.");
-        return;
-      }
-
-      const res = await fetch("/api/find-partner", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(topicId != null ? { topicId } : {}),
-      });
-
-      let body: any = null;
-      try {
-        body = await res.json();
-      } catch {
-        body = {};
-      }
-
-      if (!res.ok) {
-        setFindMsg(body?.error || `Server error (${res.status})`);
-      } else if (body?.match) {
-        setMatchSlug(body.match);
-      } else {
-        setFindMsg("Searching… waiting for another debater.");
-      }
-    } catch (err: any) {
-      setFindMsg(err?.message || "Network error");
-    } finally {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      setFindMsg("Not signed in.");
       setFinding(false);
+      return;
     }
+
+    const res = await fetch("/api/find-partner", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(topicId != null ? { topicId } : {}),
+    });
+
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) setFindMsg(body?.error || "Server error");
+    else if (!body?.match) setFindMsg("Searching… waiting for another debater.");
+
+    setFinding(false);
   }
 
   return (
     <main className="p-6 space-y-6">
       <h1 className="text-3xl font-bold">Welcome to Debate.Me</h1>
 
-      {/* ✅ SIGN IN / SIGN OUT CARD (restored) */}
-      <div className="mt-4 p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
+      {/* Sign in card */}
+      <div className="p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
         {email ? (
           <div className="space-x-3 mb-3">
             <span>
               Signed in as <b>{email}</b>
             </span>
-            <button
-              onClick={signOut}
-              className="rounded bg-zinc-800 text-white px-3 py-1"
-            >
+            <button onClick={signOut} className="rounded bg-zinc-800 px-3 py-1">
               Sign out
             </button>
           </div>
         ) : (
-          <a
-            href="/login"
-            className="inline-block rounded bg-zinc-800 text-white px-3 py-1 mb-3"
-          >
+          <a href="/login" className="rounded bg-zinc-800 px-3 py-1">
             Sign in
           </a>
         )}
 
-        {/* Display name editor */}
         {email && (
           <div className="mt-2">
             <label className="block text-sm mb-1">Display name</label>
-            <div className="flex flex-col sm:flex-row gap-2">
+            <div className="flex gap-2">
               <input
                 value={handle}
                 onChange={(e) => setHandle(e.target.value)}
-                placeholder="e.g., MoesLuis"
-                className="border border-zinc-700 rounded p-2 flex-1 bg-black/40"
+                className="border border-zinc-700 rounded p-2 bg-black/40"
               />
-              <button
-                onClick={saveHandle}
-                className="rounded bg-zinc-800 text-white px-4 py-2"
-              >
+              <button onClick={saveHandle} className="bg-zinc-800 px-4 rounded">
                 Save
               </button>
             </div>
@@ -280,67 +223,93 @@ useEffect(() => {
         )}
       </div>
 
-      {/* ✅ TRENDING TOPICS (fixed labels) */}
+      {/* Trending */}
       {trending.length > 0 && (
         <section>
           <h2 className="text-xl font-semibold mb-2">Trending topics</h2>
-
-          {/* topic popularity list */}
-          <ul className="space-y-2 text-sm text-zinc-200">
+          <ul className="space-y-2 text-sm">
             {trending.map((t) => (
               <li key={t.id}>
                 <button
                   onClick={() => callFindPartner(t.id, t.name)}
-                  className="text-left hover:text-emerald-400 transition"
                   disabled={finding}
-                  title="Click to queue for this topic"
+                  className="hover:text-emerald-400"
                 >
                   {t.name} — {t.count} debater{t.count === 1 ? "" : "s"}
                 </button>
               </li>
             ))}
           </ul>
-
-          {/* live activity line */}
           <p className="text-xs text-zinc-400 mt-3">
             {debatingPeople} debating now • {waitingCount} waiting
           </p>
         </section>
       )}
 
-      {/* ✅ FIND PARTNER AREA with nicer searching message */}
-      <section className="mt-4 p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
+      {/* Find partner */}
+      <section className="p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
         <h2 className="text-lg font-semibold mb-2">Find a debating partner</h2>
 
         <button
           onClick={() => callFindPartner()}
           disabled={finding}
-          className="rounded bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-4 py-2"
+          className="rounded bg-emerald-600 px-4 py-2 text-white"
         >
           {finding ? "Searching…" : "Find partner"}
         </button>
 
         {finding && (
-          <div className="mt-3 flex items-center gap-2 text-sm text-zinc-300 animate-pulse">
-            <span className="inline-block h-3 w-3 rounded-full bg-emerald-500" />
-            <span>
-              Looking for someone{" "}
-              {activeTopic ? `debating ${activeTopic}` : "to debate with"}…
-            </span>
-          </div>
+          <p className="mt-3 text-sm animate-pulse">
+            Looking for someone{" "}
+            {activeTopic ? `debating ${activeTopic}` : "to debate with"}…
+          </p>
         )}
 
-        {findMsg && <p className="text-sm text-zinc-300 mt-2">{findMsg}</p>}
+        {findMsg && <p className="text-sm mt-2">{findMsg}</p>}
 
         {matchSlug && (
-          <a
-            href={`/room/${matchSlug}`}
+          <button
+            onClick={() => {
+              setPendingRoom(matchSlug);
+              setShowGate(true);
+            }}
             className="inline-block mt-3 rounded bg-zinc-800 text-white px-4 py-2"
           >
             Join matched room
-          </a>
+          </button>
         )}
       </section>
+
+      {/* 🔒 INTERMEDIATE CONSENT MODAL */}
+      {showGate && pendingRoom && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="max-w-md w-full rounded-lg bg-zinc-950 border border-zinc-800 p-4">
+            <h2 className="text-lg font-semibold mb-2">⚠️ Before you enter</h2>
+            <p className="text-sm text-zinc-300">
+              Leaving a debate without properly ending it will result in a{" "}
+              <b>5% penalty</b> to your profile score.
+            </p>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setShowGate(false);
+                  setPendingRoom(null);
+                }}
+                className="rounded bg-zinc-900 px-3 py-2"
+              >
+                Cancel ❌
+              </button>
+              <a
+                href={`/room/${pendingRoom}`}
+                className="rounded bg-emerald-600 px-4 py-2 text-white"
+              >
+                I accept ✅
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
