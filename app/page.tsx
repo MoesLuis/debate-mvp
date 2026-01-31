@@ -278,15 +278,6 @@ useEffect(() => {
             )}
           </div>
         )}
-
-        <div className="mt-6">
-          <a
-            href="/room/deb-test-123"
-            className="inline-block rounded bg-zinc-800 text-white px-4 py-2"
-          >
-            Join test room
-          </a>
-        </div>
       </div>
 
       {/* ✅ TRENDING TOPICS (fixed labels) */}
