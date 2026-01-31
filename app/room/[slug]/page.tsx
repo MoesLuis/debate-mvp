@@ -19,12 +19,16 @@ export default function RoomPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitMsg, setSubmitMsg] = useState<string | null>(null);
 
+  // Tracks whether the debate has been properly ended
   const debateEndedRef = useRef(false);
 
-  // Auth + name
+  /* -------------------- AUTH + NAME -------------------- */
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
       if (!user) {
         router.replace("/login");
         return;
@@ -40,12 +44,14 @@ export default function RoomPage() {
     })();
   }, [router]);
 
-  // Heartbeat (unchanged)
+  /* -------------------- HEARTBEAT -------------------- */
   useEffect(() => {
-    let t: number;
+    let intervalId: number;
 
     async function heartbeat() {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session) return;
 
       await fetch("/api/heartbeat", {
@@ -60,22 +66,57 @@ export default function RoomPage() {
     }
 
     heartbeat();
-    t = window.setInterval(heartbeat, 15000);
-    return () => clearInterval(t);
+    intervalId = window.setInterval(heartbeat, 15000);
+
+    return () => clearInterval(intervalId);
   }, [room]);
 
-  // 🔒 INTERCEPT BACK / REFRESH / TAB CLOSE
+  /* -------------------- REALTIME AUTO-EXIT -------------------- */
+  useEffect(() => {
+    let active = true;
+
+    async function subscribe() {
+      const channel = supabase
+        .channel(`match-watch-${room}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "matches",
+            filter: `room_slug=eq.${room}`,
+          },
+          (payload: any) => {
+            if (!active) return;
+            const row = payload.new;
+            if (!row) return;
+
+            if (row.status !== "active") {
+              alert("Your partner left or cancelled the debate.");
+              window.location.href = "/";
+            }
+          }
+        )
+        .subscribe();
+
+      return () => {
+        active = false;
+        supabase.removeChannel(channel);
+      };
+    }
+
+    subscribe();
+  }, [room]);
+
+  /* -------------------- INTERCEPT BACK / REFRESH / CLOSE -------------------- */
   useEffect(() => {
     function beforeUnload(e: BeforeUnloadEvent) {
       if (debateEndedRef.current) return;
-
       e.preventDefault();
-      e.returnValue =
-        "Leaving without ending the debate will apply a 5% rating penalty.";
-      return e.returnValue;
+      e.returnValue = "";
     }
 
-    async function handleForfeit() {
+    async function handleBack() {
       if (debateEndedRef.current) return;
 
       const confirmLeave = window.confirm(
@@ -89,7 +130,9 @@ export default function RoomPage() {
 
       debateEndedRef.current = true;
 
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session) return;
 
       await fetch("/api/forfeit-match", {
@@ -101,23 +144,27 @@ export default function RoomPage() {
         body: JSON.stringify({ roomSlug: room }),
         keepalive: true,
       });
+
+      window.location.href = "/";
     }
 
     window.addEventListener("beforeunload", beforeUnload);
-    window.addEventListener("popstate", handleForfeit);
+    window.addEventListener("popstate", handleBack);
 
     return () => {
       window.removeEventListener("beforeunload", beforeUnload);
-      window.removeEventListener("popstate", handleForfeit);
+      window.removeEventListener("popstate", handleBack);
     };
   }, [room, router]);
 
-  // Normal end debate
+  /* -------------------- NORMAL END DEBATE -------------------- */
   async function submitEndMatch() {
     debateEndedRef.current = true;
     setSubmitting(true);
 
-    const { data: { session } } = await supabase.auth.getSession();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
     if (!session) return;
 
     await fetch("/api/end-match", {
@@ -135,6 +182,7 @@ export default function RoomPage() {
 
   if (!name) return <p className="text-zinc-400">Loading…</p>;
 
+  /* -------------------- UI -------------------- */
   return (
     <main className="p-4">
       <div className="flex justify-between mb-3">

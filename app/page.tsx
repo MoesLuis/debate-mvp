@@ -25,11 +25,11 @@ export default function Home() {
   const [matchSlug, setMatchSlug] = useState<string | null>(null);
   const [activeTopic, setActiveTopic] = useState<string | null>(null);
 
-  // 🔒 Interstitial modal state
+  // 🔒 Consent gate state
   const [showGate, setShowGate] = useState(false);
   const [pendingRoom, setPendingRoom] = useState<string | null>(null);
 
-  // Auth + profile
+  /* ---------------- AUTH + PROFILE ---------------- */
   useEffect(() => {
     let cancelled = false;
 
@@ -63,7 +63,7 @@ export default function Home() {
     };
   }, []);
 
-  // Realtime: auto-detect match creation
+  /* ---------------- REALTIME MATCH DETECT ---------------- */
   useEffect(() => {
     if (!userId) return;
 
@@ -93,7 +93,7 @@ export default function Home() {
     };
   }, [userId]);
 
-  // Trending topics
+  /* ---------------- TRENDING ---------------- */
   useEffect(() => {
     supabase
       .from("trending_topics")
@@ -111,7 +111,7 @@ export default function Home() {
       });
   }, []);
 
-  // Live counts
+  /* ---------------- LIVE COUNTS ---------------- */
   useEffect(() => {
     let cancelled = false;
 
@@ -135,6 +135,32 @@ export default function Home() {
     };
   }, []);
 
+  /* ---------------- CONSENT AUTO-CANCEL (20s) ---------------- */
+  useEffect(() => {
+    if (!showGate || !pendingRoom) return;
+
+    const timer = setTimeout(async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        await fetch("/api/cancel-match", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ roomSlug: pendingRoom }),
+        });
+      }
+
+      setShowGate(false);
+      setPendingRoom(null);
+      setMatchSlug(null);
+    }, 20000);
+
+    return () => clearTimeout(timer);
+  }, [showGate, pendingRoom]);
+
+  /* ---------------- ACTIONS ---------------- */
   async function signOut() {
     await supabase.auth.signOut();
     window.location.href = "/login";
@@ -182,6 +208,7 @@ export default function Home() {
     setFinding(false);
   }
 
+  /* ---------------- UI ---------------- */
   return (
     <main className="p-6 space-y-6">
       <h1 className="text-3xl font-bold">Welcome to Debate.Me</h1>
@@ -280,7 +307,7 @@ export default function Home() {
         )}
       </section>
 
-      {/* 🔒 INTERMEDIATE CONSENT MODAL */}
+      {/* 🔒 CONSENT MODAL */}
       {showGate && pendingRoom && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="max-w-md w-full rounded-lg bg-zinc-950 border border-zinc-800 p-4">
@@ -291,30 +318,30 @@ export default function Home() {
             </p>
 
             <div className="mt-4 flex justify-end gap-2">
-<button
-  onClick={async () => {
-    if (pendingRoom) {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.access_token) {
-        await fetch("/api/cancel-match", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ roomSlug: pendingRoom }),
-        });
-      }
-    }
+              <button
+                onClick={async () => {
+                  if (pendingRoom) {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    if (session?.access_token) {
+                      await fetch("/api/cancel-match", {
+                        method: "POST",
+                        headers: {
+                          Authorization: `Bearer ${session.access_token}`,
+                          "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({ roomSlug: pendingRoom }),
+                      });
+                    }
+                  }
 
-    setShowGate(false);
-    setPendingRoom(null);
-    setMatchSlug(null);
-  }}
-  className="rounded bg-zinc-900 px-3 py-2"
->
-  Cancel
-</button>
+                  setShowGate(false);
+                  setPendingRoom(null);
+                  setMatchSlug(null);
+                }}
+                className="rounded bg-zinc-900 px-3 py-2"
+              >
+                Cancel
+              </button>
               <a
                 href={`/room/${pendingRoom}`}
                 className="rounded bg-emerald-600 px-4 py-2 text-white"
