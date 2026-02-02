@@ -19,6 +19,9 @@ export default function RoomPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitMsg, setSubmitMsg] = useState<string | null>(null);
 
+  // 🔴 new: forced exit message when match is cancelled
+  const [forceExitMsg, setForceExitMsg] = useState<string | null>(null);
+
   // Tracks whether the debate has been properly ended
   const debateEndedRef = useRef(false);
 
@@ -75,38 +78,46 @@ export default function RoomPage() {
   useEffect(() => {
     let active = true;
 
-    async function subscribe() {
-      const channel = supabase
-        .channel(`match-watch-${room}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "UPDATE",
-            schema: "public",
-            table: "matches",
-            filter: `room_slug=eq.${room}`,
-          },
-          (payload: any) => {
-            if (!active) return;
-            const row = payload.new;
-            if (!row) return;
+    const channel = supabase
+      .channel(`match-watch-${room}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "matches",
+          filter: `room_slug=eq.${room}`,
+        },
+        (payload: any) => {
+          if (!active) return;
+          const row = payload.new;
+          if (!row) return;
 
-            if (row.status !== "active") {
-              alert("Your partner left or cancelled the debate.");
-              window.location.href = "/";
-            }
+          if (row.status !== "active") {
+            setForceExitMsg(
+              "Your partner left or cancelled the debate. Returning to home…"
+            );
           }
-        )
-        .subscribe();
+        }
+      )
+      .subscribe();
 
-      return () => {
-        active = false;
-        supabase.removeChannel(channel);
-      };
-    }
-
-    subscribe();
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
   }, [room]);
+
+  /* -------------------- FORCE REDIRECT ON CANCEL -------------------- */
+  useEffect(() => {
+    if (!forceExitMsg) return;
+
+    const t = setTimeout(() => {
+      router.replace("/");
+    }, 1500);
+
+    return () => clearTimeout(t);
+  }, [forceExitMsg, router]);
 
   /* -------------------- INTERCEPT BACK / REFRESH / CLOSE -------------------- */
   useEffect(() => {
@@ -145,7 +156,7 @@ export default function RoomPage() {
         keepalive: true,
       });
 
-      window.location.href = "/";
+      router.replace("/");
     }
 
     window.addEventListener("beforeunload", beforeUnload);
@@ -176,7 +187,8 @@ export default function RoomPage() {
       body: JSON.stringify({ roomSlug: room, outcome, statement }),
     });
 
-    setSubmitMsg("Debate ended. You may now close this page.");
+    setSubmitMsg("Debate ended. Redirecting…");
+    setTimeout(() => router.replace("/"), 1200);
     setSubmitting(false);
   }
 
@@ -194,6 +206,12 @@ export default function RoomPage() {
           End debate
         </button>
       </div>
+
+      {forceExitMsg && (
+        <div className="mb-3 rounded border border-red-800 bg-red-900/30 p-3 text-sm">
+          {forceExitMsg}
+        </div>
+      )}
 
       <JitsiRoom room={room} name={name} />
 
