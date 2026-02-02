@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    // Update THIS user's heartbeat
+    // Update heartbeat for THIS user
     const nowIso = new Date().toISOString();
 
     if (match.user_a === user.id) {
@@ -73,26 +73,37 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Not allowed" }, { status: 403 });
     }
 
-    // 🔥 SERVER-SIDE DEAD USER CHECK
-    const now = Date.now();
+    // 🔥 REFRESH MATCH + SERVER-AUTHORITATIVE DEAD CHECK
+    const { data: freshMatch } = await supabaseAdmin
+      .from("matches")
+      .select("last_heartbeat_a, last_heartbeat_b")
+      .eq("id", match.id)
+      .single();
 
-    const aDead =
-      match.last_heartbeat_a &&
-      now - new Date(match.last_heartbeat_a).getTime() > HEARTBEAT_TIMEOUT_MS;
+    if (freshMatch) {
+      const now = Date.now();
 
-    const bDead =
-      match.last_heartbeat_b &&
-      now - new Date(match.last_heartbeat_b).getTime() > HEARTBEAT_TIMEOUT_MS;
+      const aDead =
+        freshMatch.last_heartbeat_a &&
+        now -
+          new Date(freshMatch.last_heartbeat_a).getTime() >
+            HEARTBEAT_TIMEOUT_MS;
 
-    if (aDead || bDead) {
-      await supabaseAdmin
-        .from("matches")
-        .update({
-          status: "completed",
-          agreement_validated: false,
-          ended_at: new Date().toISOString(),
-        })
-        .eq("id", match.id);
+      const bDead =
+        freshMatch.last_heartbeat_b &&
+        now -
+          new Date(freshMatch.last_heartbeat_b).getTime() >
+            HEARTBEAT_TIMEOUT_MS;
+
+      if (aDead || bDead) {
+        await supabaseAdmin
+          .from("matches")
+          .update({
+            status: "completed",
+            ended_at: new Date().toISOString(),
+          })
+          .eq("id", match.id);
+      }
     }
 
     return NextResponse.json({ ok: true });
