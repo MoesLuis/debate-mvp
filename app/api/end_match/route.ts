@@ -78,10 +78,7 @@ export async function POST(req: NextRequest) {
       updates.user_b_statement = statement;
     }
 
-    await supabaseAdmin
-      .from("matches")
-      .update(updates)
-      .eq("id", match.id);
+    await supabaseAdmin.from("matches").update(updates).eq("id", match.id);
 
     // Reload to check both sides
     const { data: updated } = await supabaseAdmin
@@ -96,12 +93,15 @@ export async function POST(req: NextRequest) {
       updated?.user_a_statement &&
       updated?.user_b_statement
     ) {
-      // Validate agreement (MVP logic)
+      // Agreement validation (Phase 1: mutual confirmation only)
       const agreementValidated =
         updated.user_a_outcome === "agreement" &&
         updated.user_b_outcome === "agreement";
 
-      await finalizeRatings(updated, agreementValidated);
+      const disagreement =
+        updated.user_a_outcome !== updated.user_b_outcome;
+
+      await finalizeRatings(updated, agreementValidated, disagreement);
     }
 
     return NextResponse.json({ ok: true });
@@ -113,23 +113,38 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// ---- Rating logic ----
+// ---------------- Rating logic (Phase 1) ----------------
 
-async function finalizeRatings(match: any, agreementValidated: boolean) {
+async function finalizeRatings(
+  match: any,
+  agreementValidated: boolean,
+  disagreement: boolean
+) {
+  // Collaboration Rating (CR)
   const CR_GAIN = 10;
+  const CR_PARTIAL = 3;
   const CR_LOSS = 5;
-  const SR_GAIN = 12;
-  const SR_LOSS = 4;
+  const CR_DISAGREE_LOSS = 8;
 
-  const updates: any[] = [];
+  // Skill Rating (SR) — simple for now
+  const SR_GAIN = 5;
+  const SR_PARTIAL = 2;
+  const SR_LOSS = 2;
+
+  const updates: Promise<any>[] = [];
 
   if (agreementValidated) {
     updates.push(
       adjustRatings(match.user_a, +SR_GAIN, +CR_GAIN),
       adjustRatings(match.user_b, +SR_GAIN, +CR_GAIN)
     );
+  } else if (disagreement) {
+    updates.push(
+      adjustRatings(match.user_a, -SR_LOSS, -CR_DISAGREE_LOSS),
+      adjustRatings(match.user_b, -SR_LOSS, -CR_DISAGREE_LOSS)
+    );
   } else {
-    // Option B: both lose CR (and small SR)
+    // Both chose partial or no agreement
     updates.push(
       adjustRatings(match.user_a, -SR_LOSS, -CR_LOSS),
       adjustRatings(match.user_b, -SR_LOSS, -CR_LOSS)
