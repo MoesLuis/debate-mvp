@@ -2,6 +2,8 @@ import { createClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
 import supabaseAdmin from "@/lib/supabaseAdmin";
 
+const HEARTBEAT_TIMEOUT_MS = 30_000; // 30 seconds
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
@@ -28,36 +30,69 @@ export async function POST(req: NextRequest) {
 
     const {
       data: { user },
-      error: userErr,
     } = await supabaseAuthed.auth.getUser();
 
-    if (userErr || !user) {
+    if (!user) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // Make sure the user is part of this active match
-    const { data: match, error: matchErr } = await supabaseAdmin
+    const { data: match } = await supabaseAdmin
       .from("matches")
-      .select("id, user_a, user_b")
+      .select(
+        `
+        id,
+        user_a,
+        user_b,
+        last_heartbeat_a,
+        last_heartbeat_b,
+        status
+      `
+      )
       .eq("room_slug", roomSlug)
       .eq("status", "active")
       .maybeSingle();
 
-    if (matchErr) {
-      return NextResponse.json({ error: matchErr.message }, { status: 500 });
+    if (!match) {
+      return NextResponse.json({ ok: true });
     }
 
-    if (!match || (match.user_a !== user.id && match.user_b !== user.id)) {
+    // Update THIS user's heartbeat
+    const nowIso = new Date().toISOString();
+
+    if (match.user_a === user.id) {
+      await supabaseAdmin
+        .from("matches")
+        .update({ last_heartbeat_a: nowIso })
+        .eq("id", match.id);
+    } else if (match.user_b === user.id) {
+      await supabaseAdmin
+        .from("matches")
+        .update({ last_heartbeat_b: nowIso })
+        .eq("id", match.id);
+    } else {
       return NextResponse.json({ error: "Not allowed" }, { status: 403 });
     }
 
-    const { error: upErr } = await supabaseAdmin
-      .from("matches")
-      .update({ last_heartbeat: new Date().toISOString() })
-      .eq("id", match.id);
+    // 🔥 SERVER-SIDE DEAD USER CHECK
+    const now = Date.now();
 
-    if (upErr) {
-      return NextResponse.json({ error: upErr.message }, { status: 500 });
+    const aDead =
+      match.last_heartbeat_a &&
+      now - new Date(match.last_heartbeat_a).getTime() > HEARTBEAT_TIMEOUT_MS;
+
+    const bDead =
+      match.last_heartbeat_b &&
+      now - new Date(match.last_heartbeat_b).getTime() > HEARTBEAT_TIMEOUT_MS;
+
+    if (aDead || bDead) {
+      await supabaseAdmin
+        .from("matches")
+        .update({
+          status: "completed",
+          agreement_validated: false,
+          ended_at: new Date().toISOString(),
+        })
+        .eq("id", match.id);
     }
 
     return NextResponse.json({ ok: true });

@@ -19,42 +19,45 @@ export default function RoomPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitMsg, setSubmitMsg] = useState<string | null>(null);
 
-  // 🔴 new: forced exit message when match is cancelled
   const [forceExitMsg, setForceExitMsg] = useState<string | null>(null);
-
-  // Tracks whether the debate has been properly ended
   const debateEndedRef = useRef(false);
 
-  /* -------------------- AUTH + NAME -------------------- */
+  /* ---------- AUTH + VALIDATE ROOM ---------- */
   useEffect(() => {
     (async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
+      const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         router.replace("/login");
         return;
       }
 
-      const { data } = await supabase
+      const { data: match } = await supabase
+        .from("matches")
+        .select("status")
+        .eq("room_slug", room)
+        .maybeSingle();
+
+      if (!match || match.status !== "active") {
+        router.replace("/");
+        return;
+      }
+
+      const { data: profile } = await supabase
         .from("profiles")
         .select("handle")
         .eq("user_id", user.id)
         .maybeSingle();
 
-      setName(data?.handle || user.email || "Guest");
+      setName(profile?.handle || user.email || "Guest");
     })();
-  }, [router]);
+  }, [room, router]);
 
-  /* -------------------- HEARTBEAT -------------------- */
+  /* ---------- HEARTBEAT ---------- */
   useEffect(() => {
-    let intervalId: number;
+    let t: number;
 
-    async function heartbeat() {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+    async function beat() {
+      const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
       await fetch("/api/heartbeat", {
@@ -68,16 +71,13 @@ export default function RoomPage() {
       });
     }
 
-    heartbeat();
-    intervalId = window.setInterval(heartbeat, 15000);
-
-    return () => clearInterval(intervalId);
+    beat();
+    t = window.setInterval(beat, 15000);
+    return () => clearInterval(t);
   }, [room]);
 
-  /* -------------------- REALTIME AUTO-EXIT -------------------- */
+  /* ---------- REALTIME MATCH DEATH ---------- */
   useEffect(() => {
-    let active = true;
-
     const channel = supabase
       .channel(`match-watch-${room}`)
       .on(
@@ -89,13 +89,10 @@ export default function RoomPage() {
           filter: `room_slug=eq.${room}`,
         },
         (payload: any) => {
-          if (!active) return;
           const row = payload.new;
-          if (!row) return;
-
-          if (row.status !== "active") {
+          if (row?.status !== "active") {
             setForceExitMsg(
-              "Your partner left or cancelled the debate. Returning to home…"
+              "Your partner disconnected or quit. The debate has ended."
             );
           }
         }
@@ -103,23 +100,18 @@ export default function RoomPage() {
       .subscribe();
 
     return () => {
-      active = false;
       supabase.removeChannel(channel);
     };
   }, [room]);
 
-  /* -------------------- FORCE REDIRECT ON CANCEL -------------------- */
+  /* ---------- FORCE REDIRECT ---------- */
   useEffect(() => {
     if (!forceExitMsg) return;
-
-    const t = setTimeout(() => {
-      router.replace("/");
-    }, 1500);
-
+    const t = setTimeout(() => router.replace("/"), 1500);
     return () => clearTimeout(t);
   }, [forceExitMsg, router]);
 
-  /* -------------------- INTERCEPT BACK / REFRESH / CLOSE -------------------- */
+  /* ---------- INTERCEPT BACK / CLOSE ---------- */
   useEffect(() => {
     function beforeUnload(e: BeforeUnloadEvent) {
       if (debateEndedRef.current) return;
@@ -130,62 +122,57 @@ export default function RoomPage() {
     async function handleBack() {
       if (debateEndedRef.current) return;
 
-      const confirmLeave = window.confirm(
-        "Are you sure you want to leave?\n\nLeaving without ending the debate will result in a 5% penalty to your profile score."
+      const ok = window.confirm(
+        "Leaving without ending the debate will result in a 5% penalty."
       );
 
-      if (!confirmLeave) {
+      if (!ok) {
         router.push(`/room/${room}`);
         return;
       }
 
       debateEndedRef.current = true;
 
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) return;
-
-      await fetch("/api/forfeit-match", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ roomSlug: room }),
-        keepalive: true,
-      });
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        await fetch("/api/forfeit-match", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ roomSlug: room }),
+          keepalive: true,
+        });
+      }
 
       router.replace("/");
     }
 
     window.addEventListener("beforeunload", beforeUnload);
     window.addEventListener("popstate", handleBack);
-
     return () => {
       window.removeEventListener("beforeunload", beforeUnload);
       window.removeEventListener("popstate", handleBack);
     };
   }, [room, router]);
 
-  /* -------------------- NORMAL END DEBATE -------------------- */
+  /* ---------- NORMAL END ---------- */
   async function submitEndMatch() {
     debateEndedRef.current = true;
     setSubmitting(true);
 
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) return;
-
-    await fetch("/api/end-match", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ roomSlug: room, outcome, statement }),
-    });
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      await fetch("/api/end-match", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ roomSlug: room, outcome, statement }),
+      });
+    }
 
     setSubmitMsg("Debate ended. Redirecting…");
     setTimeout(() => router.replace("/"), 1200);
@@ -194,7 +181,6 @@ export default function RoomPage() {
 
   if (!name) return <p className="text-zinc-400">Loading…</p>;
 
-  /* -------------------- UI -------------------- */
   return (
     <main className="p-4">
       <div className="flex justify-between mb-3">
