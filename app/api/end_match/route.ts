@@ -7,7 +7,6 @@ type Outcome = "agreement" | "partial" | "no_agreement";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-
     const { roomSlug, outcome, statement } = body as {
       roomSlug: string;
       outcome: Outcome;
@@ -46,7 +45,6 @@ export async function POST(req: NextRequest) {
 
     const userId = user.id;
 
-    // Load active match
     const { data: match } = await supabaseAdmin
       .from("matches")
       .select("*")
@@ -65,9 +63,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Not allowed" }, { status: 403 });
     }
 
-    // Save outcome + statement
+    // Save this user's submission (do NOT complete match until both submitted)
     const updates: any = {
-      ended_at: new Date().toISOString(),
+      ended_at: new Date().toISOString(), // ok to set once the first person ends
     };
 
     if (isUserA) {
@@ -80,31 +78,33 @@ export async function POST(req: NextRequest) {
 
     await supabaseAdmin.from("matches").update(updates).eq("id", match.id);
 
-    // Reload to check both sides
+    // Reload to see if both are done
     const { data: updated } = await supabaseAdmin
       .from("matches")
       .select("*")
       .eq("id", match.id)
       .maybeSingle();
 
-    if (
-      updated?.user_a_outcome &&
-      updated?.user_b_outcome &&
-      updated?.user_a_statement &&
-      updated?.user_b_statement
-    ) {
-      // Agreement validation (Phase 1: mutual confirmation only)
-      const agreementValidated =
-        updated.user_a_outcome === "agreement" &&
-        updated.user_b_outcome === "agreement";
+    const bothSubmitted =
+      !!updated?.user_a_outcome &&
+      !!updated?.user_b_outcome &&
+      !!updated?.user_a_statement &&
+      !!updated?.user_b_statement;
 
-      const disagreement =
-        updated.user_a_outcome !== updated.user_b_outcome;
-
-      await finalizeRatings(updated, agreementValidated, disagreement);
+    if (!bothSubmitted) {
+      return NextResponse.json({ ok: true, waiting: true, completed: false });
     }
 
-    return NextResponse.json({ ok: true });
+    // Phase 1 agreement validation: mutual confirmation only
+    const agreementValidated =
+      updated.user_a_outcome === "agreement" &&
+      updated.user_b_outcome === "agreement";
+
+    const disagreement = updated.user_a_outcome !== updated.user_b_outcome;
+
+    await finalizeRatings(updated, agreementValidated, disagreement);
+
+    return NextResponse.json({ ok: true, waiting: false, completed: true });
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Server error" },
@@ -113,45 +113,41 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// ---------------- Rating logic (Phase 1) ----------------
-
 async function finalizeRatings(
   match: any,
   agreementValidated: boolean,
   disagreement: boolean
 ) {
-  // Collaboration Rating (CR)
+  // CR
   const CR_GAIN = 10;
-  const CR_PARTIAL = 3;
   const CR_LOSS = 5;
   const CR_DISAGREE_LOSS = 8;
 
-  // Skill Rating (SR) — simple for now
+  // SR (simple MVP)
   const SR_GAIN = 5;
-  const SR_PARTIAL = 2;
   const SR_LOSS = 2;
 
-  const updates: Promise<any>[] = [];
+  const ops: Promise<any>[] = [];
 
   if (agreementValidated) {
-    updates.push(
+    ops.push(
       adjustRatings(match.user_a, +SR_GAIN, +CR_GAIN),
       adjustRatings(match.user_b, +SR_GAIN, +CR_GAIN)
     );
   } else if (disagreement) {
-    updates.push(
+    ops.push(
       adjustRatings(match.user_a, -SR_LOSS, -CR_DISAGREE_LOSS),
       adjustRatings(match.user_b, -SR_LOSS, -CR_DISAGREE_LOSS)
     );
   } else {
-    // Both chose partial or no agreement
-    updates.push(
+    // both chose partial or both chose no_agreement
+    ops.push(
       adjustRatings(match.user_a, -SR_LOSS, -CR_LOSS),
       adjustRatings(match.user_b, -SR_LOSS, -CR_LOSS)
     );
   }
 
-  await Promise.all(updates);
+  await Promise.all(ops);
 
   await supabaseAdmin
     .from("matches")

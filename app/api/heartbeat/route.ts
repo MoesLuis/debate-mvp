@@ -36,74 +36,69 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
+    // Load active match
     const { data: match } = await supabaseAdmin
       .from("matches")
-      .select(
-        `
-        id,
-        user_a,
-        user_b,
-        last_heartbeat_a,
-        last_heartbeat_b,
-        status
-      `
-      )
+      .select("id, user_a, user_b, status")
       .eq("room_slug", roomSlug)
       .eq("status", "active")
       .maybeSingle();
 
-    if (!match) {
-      return NextResponse.json({ ok: true });
-    }
+    if (!match) return NextResponse.json({ ok: true });
 
-    // Update heartbeat for THIS user
-    const nowIso = new Date().toISOString();
-
-    if (match.user_a === user.id) {
-      await supabaseAdmin
-        .from("matches")
-        .update({ last_heartbeat_a: nowIso })
-        .eq("id", match.id);
-    } else if (match.user_b === user.id) {
-      await supabaseAdmin
-        .from("matches")
-        .update({ last_heartbeat_b: nowIso })
-        .eq("id", match.id);
-    } else {
+    // Must be one of the participants
+    if (match.user_a !== user.id && match.user_b !== user.id) {
       return NextResponse.json({ error: "Not allowed" }, { status: 403 });
     }
 
-    // 🔥 REFRESH MATCH + SERVER-AUTHORITATIVE DEAD CHECK
-    const { data: freshMatch } = await supabaseAdmin
+    const nowIso = new Date().toISOString();
+
+    // 1) Update match-level heartbeat (useful for analytics/monitoring)
+    await supabaseAdmin
       .from("matches")
-      .select("last_heartbeat_a, last_heartbeat_b")
-      .eq("id", match.id)
-      .single();
+      .update({ last_heartbeat: nowIso })
+      .eq("id", match.id);
 
-    if (freshMatch) {
-      const now = Date.now();
+    // 2) Update per-user presence (this is what lets us detect who disappeared)
+    await supabaseAdmin
+      .from("match_presence")
+      .upsert(
+        { room_slug: roomSlug, user_id: user.id, last_seen: nowIso },
+        { onConflict: "room_slug,user_id" }
+      );
 
-      const aDead =
-        freshMatch.last_heartbeat_a &&
-        now -
-          new Date(freshMatch.last_heartbeat_a).getTime() >
-            HEARTBEAT_TIMEOUT_MS;
+    // 3) Dead-user detection: if either participant hasn't checked in recently, end match
+    const { data: presA } = await supabaseAdmin
+      .from("match_presence")
+      .select("last_seen")
+      .eq("room_slug", roomSlug)
+      .eq("user_id", match.user_a)
+      .maybeSingle();
 
-      const bDead =
-        freshMatch.last_heartbeat_b &&
-        now -
-          new Date(freshMatch.last_heartbeat_b).getTime() >
-            HEARTBEAT_TIMEOUT_MS;
+    const { data: presB } = await supabaseAdmin
+      .from("match_presence")
+      .select("last_seen")
+      .eq("room_slug", roomSlug)
+      .eq("user_id", match.user_b)
+      .maybeSingle();
 
-      if (aDead || bDead) {
-        await supabaseAdmin
-          .from("matches")
-          .update({
-            status: "completed",
-            ended_at: new Date().toISOString(),
-          })
-          .eq("id", match.id);
-      }
+    const now = Date.now();
+
+    const aLast = presA?.last_seen ? new Date(presA.last_seen).getTime() : 0;
+    const bLast = presB?.last_seen ? new Date(presB.last_seen).getTime() : 0;
+
+    const aDead = !aLast || now - aLast > HEARTBEAT_TIMEOUT_MS;
+    const bDead = !bLast || now - bLast > HEARTBEAT_TIMEOUT_MS;
+
+    if (aDead || bDead) {
+      await supabaseAdmin
+        .from("matches")
+        .update({
+          status: "completed",
+          ended_at: new Date().toISOString(),
+          agreement_validated: false,
+        })
+        .eq("id", match.id);
     }
 
     return NextResponse.json({ ok: true });
