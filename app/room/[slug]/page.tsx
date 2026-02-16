@@ -86,7 +86,7 @@ export default function RoomPage() {
     return () => clearInterval(t);
   }, [room]);
 
-  /* ---------- REALTIME MATCH UPDATES (end/disconnect/completion) ---------- */
+  /* ---------- REALTIME MATCH UPDATES ---------- */
   useEffect(() => {
     const channel = supabase
       .channel(`match-watch-${room}`)
@@ -98,7 +98,7 @@ export default function RoomPage() {
           table: "matches",
           filter: `room_slug=eq.${room}`,
         },
-        async (payload: any) => {
+        (payload: any) => {
           const row = payload.new;
 
           // If match ended (disconnect/quit/forfeit/etc)
@@ -107,15 +107,22 @@ export default function RoomPage() {
             return;
           }
 
-          // While active: detect if both have submitted end-debate data
-          if (
-            row?.user_a_outcome &&
-            row?.user_b_outcome &&
-            row?.user_a_statement &&
-            row?.user_b_statement
-          ) {
+          // Determine whether BOTH have submitted end-debate data
+          const isBothNow =
+            !!row?.user_a_outcome &&
+            !!row?.user_b_outcome &&
+            !!row?.user_a_statement &&
+            !!row?.user_b_statement;
+
+          if (isBothNow) {
             setBothSubmitted(true);
             setEndMsg("Both debaters submitted. You may exit.");
+          } else {
+            // If someone retracts, revert to waiting state
+            setBothSubmitted(false);
+            if (hasSubmitted) {
+              setEndMsg("Waiting for the other debater…");
+            }
           }
         }
       )
@@ -124,6 +131,7 @@ export default function RoomPage() {
     return () => {
       supabase.removeChannel(channel);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room]);
 
   /* ---------- FORCE REDIRECT ON MATCH END ---------- */
@@ -227,8 +235,47 @@ export default function RoomPage() {
     setSubmitting(false);
   }
 
+  /* ---------- NEW: retract your submission if you close after submitting ---------- */
+  async function retractMySubmissionAndClose() {
+    // If you never submitted, just close
+    if (!hasSubmitted) {
+      setShowEnd(false);
+      return;
+    }
+
+    // If both already submitted, don't allow retract (it would be unfair / racey)
+    if (bothSubmitted) {
+      setShowEnd(false);
+      return;
+    }
+
+    setSubmitting(true);
+    setEndMsg("Retracting your submission…");
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (session) {
+      await fetch("/api/retract-end", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ roomSlug: room }),
+      });
+    }
+
+    // Reset local state to "as if never ended"
+    setHasSubmitted(false);
+    setBothSubmitted(false);
+    setEndMsg(null);
+    setSubmitting(false);
+    setShowEnd(false);
+  }
+
   function exitAfterBothSubmitted() {
-    // Only allow leaving once both have submitted (your rule)
     if (!bothSubmitted) return;
     debateEndedRef.current = true;
     router.replace("/");
@@ -291,8 +338,9 @@ export default function RoomPage() {
 
             <div className="flex justify-end mt-4 gap-2">
               <button
-                onClick={() => setShowEnd(false)}
+                onClick={retractMySubmissionAndClose}
                 className="rounded bg-zinc-900 px-3 py-2"
+                disabled={submitting}
               >
                 Close
               </button>
