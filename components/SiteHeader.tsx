@@ -9,10 +9,28 @@ export default function SiteHeader() {
 
   const inRoom = pathname?.startsWith("/room/");
   const inTakes = pathname?.startsWith("/takes");
-  const inLive = !inTakes; // default mode
+  const inLive = !inTakes;
 
   const [sr, setSr] = useState<number | null>(null);
   const [cr, setCr] = useState<number | null>(null);
+
+  // Track takes tab without useSearchParams (avoids Suspense / prerender errors)
+  const [takesTab, setTakesTab] = useState<"following" | "explore">("following");
+
+  useEffect(() => {
+    if (!inTakes) return;
+
+    const readTab = () => {
+      const sp = new URLSearchParams(window.location.search);
+      const tab = sp.get("tab");
+      setTakesTab(tab === "explore" ? "explore" : "following");
+    };
+
+    readTab();
+    window.addEventListener("popstate", readTab);
+
+    return () => window.removeEventListener("popstate", readTab);
+  }, [inTakes]);
 
   useEffect(() => {
     if (inRoom) return;
@@ -46,15 +64,11 @@ export default function SiteHeader() {
   const linkHover = inTakes ? "hover:text-black" : "hover:text-[var(--brand)]";
 
   return (
-    <header
-      className={`sticky top-0 z-50 border-b backdrop-blur ${headerClass}`}
-    >
+    <header className={`sticky top-0 z-50 border-b backdrop-blur ${headerClass}`}>
       <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
         {/* Left: Brand (not clickable in room) */}
         {inRoom ? (
-          <span className="font-semibold cursor-default select-none">
-            Debate.Me
-          </span>
+          <span className="font-semibold cursor-default select-none">Debate.Me</span>
         ) : (
           <a href="/" className={`font-semibold ${linkHover}`}>
             Debate.Me
@@ -80,9 +94,7 @@ export default function SiteHeader() {
               Live Debates
             </a>
 
-            <span className={inTakes ? "text-zinc-500" : "text-zinc-600"}>
-              |
-            </span>
+            <span className={inTakes ? "text-zinc-500" : "text-zinc-600"}>|</span>
 
             <a
               href="/takes"
@@ -102,19 +114,18 @@ export default function SiteHeader() {
         <nav className="text-sm flex items-center gap-4">
           {!inRoom && sr !== null && cr !== null && (
             <span className={inTakes ? "text-zinc-700" : "text-zinc-400"}>
-              SR <strong className={inTakes ? "text-zinc-900" : ""}>{sr}</strong>{" "}
-              · CR{" "}
+              SR <strong className={inTakes ? "text-zinc-900" : ""}>{sr}</strong> · CR{" "}
               <strong className={inTakes ? "text-zinc-900" : ""}>{cr}</strong>
             </span>
           )}
 
           {inRoom ? (
-            <span className="text-zinc-600 cursor-not-allowed select-none">
-              Profile
-            </span>
+            <span className="text-zinc-600 cursor-not-allowed select-none">Profile</span>
           ) : (
             <a
-              className={inTakes ? "text-zinc-800 hover:text-black" : "text-zinc-300 hover:text-white"}
+              className={
+                inTakes ? "text-zinc-800 hover:text-black" : "text-zinc-300 hover:text-white"
+              }
               href="/profile"
               aria-label="Profile"
             >
@@ -128,19 +139,26 @@ export default function SiteHeader() {
       {!inRoom && inTakes && (
         <div className="mx-auto max-w-6xl px-4 pb-2">
           <div className="flex items-center gap-8 text-sm">
-            <a
-              href="/takes?tab=following"
-              className="relative pb-2"
-            >
-              <span className="text-zinc-900 font-medium">Following</span>
-              <span className="absolute left-0 right-0 -bottom-[2px] h-[2px] bg-black" />
+            <a href="/takes?tab=following" className="relative pb-2">
+              <span
+                className={takesTab === "following" ? "text-zinc-900 font-medium" : "text-zinc-600"}
+              >
+                Following
+              </span>
+              {takesTab === "following" && (
+                <span className="absolute left-0 right-0 -bottom-[2px] h-[2px] bg-black" />
+              )}
             </a>
 
-            <a
-              href="/takes?tab=explore"
-              className="relative pb-2 text-zinc-600 hover:text-zinc-900"
-            >
-              Explore
+            <a href="/takes?tab=explore" className="relative pb-2">
+              <span
+                className={takesTab === "explore" ? "text-zinc-900 font-medium" : "text-zinc-600"}
+              >
+                Explore
+              </span>
+              {takesTab === "explore" && (
+                <span className="absolute left-0 right-0 -bottom-[2px] h-[2px] bg-black" />
+              )}
             </a>
           </div>
         </div>
