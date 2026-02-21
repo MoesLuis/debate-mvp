@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { useSearchParams } from "next/navigation";
+import TakesTopicsRibbon from "@/components/TakesTopicsRibbon";
 
 export default function TakesClient() {
   const params = useSearchParams();
@@ -10,30 +11,20 @@ export default function TakesClient() {
 
   return (
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
-      {/* Topic ribbon placeholder */}
-      <div className="flex items-center gap-3 overflow-x-auto pb-3">
-        <button className="px-4 py-2 rounded-full border border-zinc-400 bg-zinc-300 text-sm">
-          Topics
-        </button>
-
-        {/* Placeholders; Phase 2 will render user-selected topics */}
-        <button className="px-4 py-2 rounded-full border border-zinc-400 bg-zinc-100 text-sm">
-          AI Ethics
-        </button>
-        <button className="px-4 py-2 rounded-full border border-zinc-400 bg-zinc-100 text-sm">
-          Economics
-        </button>
-        <button className="px-4 py-2 rounded-full border border-zinc-400 bg-zinc-100 text-sm">
-          Philosophy
-        </button>
-      </div>
+      {/* REAL Topic ribbon (from user_topics) */}
+      <TakesTopicsRibbon />
 
       {/* Feed area placeholder */}
       <div className="mt-6 flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
         <div className="text-center">
           <div className="text-4xl font-semibold mb-2">Video</div>
           <p className="text-sm text-zinc-600">
-            {isFollowing ? "Following feed (80/20 later)" : "Explore feed"}
+            {isFollowing
+              ? "Following feed (uses your selected topics)"
+              : "Explore feed (trending + discovery)"}
+          </p>
+          <p className="text-xs text-zinc-500 mt-2">
+            Phase 3+ will load real takes here.
           </p>
         </div>
       </div>
