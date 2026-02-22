@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import TakesTopicsRibbon from "@/components/TakesTopicsRibbon";
 
@@ -11,6 +11,7 @@ type Topic = {
 };
 
 export default function TakesClient() {
+  const router = useRouter();
   const params = useSearchParams();
   const tab = params.get("tab") || "following";
   const isFollowing = useMemo(() => tab !== "explore", [tab]);
@@ -134,9 +135,7 @@ export default function TakesClient() {
                     }`}
                   >
                     {topic.name}
-                    {isFollowed && (
-                      <span className="ml-2 text-xs">✓</span>
-                    )}
+                    {isFollowed && <span className="ml-2 text-xs">✓</span>}
                   </button>
                 );
               })}
@@ -145,12 +144,15 @@ export default function TakesClient() {
         </div>
       )}
 
-      {/* Right action rail (unchanged placeholder) */}
+      {/* Right action rail */}
       <div className="fixed right-6 top-1/2 -translate-y-1/2 flex flex-col gap-3">
         <button className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs">
           Topic
         </button>
-        <button className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs">
+        <button
+          onClick={() => router.push("/profile")}
+          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs"
+        >
           Profile
         </button>
         <button className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs">
@@ -165,7 +167,11 @@ export default function TakesClient() {
         <button className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs">
           In favor
         </button>
-        <button className="w-20 h-20 rounded border border-zinc-400 bg-zinc-100 text-xs">
+
+        <button
+          onClick={() => router.push("/takes/record")}
+          className="w-20 h-20 rounded border border-zinc-400 bg-black text-white text-xs hover:opacity-90"
+        >
           Record
           <br />
           take
