@@ -8,7 +8,7 @@ type CreateUploadBody = {
   topicId: number;
   questionId: number;
   stance?: "neutral" | "pro" | "against";
-  parentTakeId?: string | null;
+  parentTakeId?: string | null; // can be root OR a response; server will normalize to root
   isChallengeable?: boolean;
 };
 
@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // 2) Create an authed Supabase client using the bearer token
+    // 2) Authed Supabase client to identify user
     const supabaseAuthed = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -52,34 +52,97 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // 3) Read and validate body
+    // 3) Read body
     const body = (await req.json()) as CreateUploadBody;
 
-    const topicId = Number(body?.topicId);
-    const questionId = Number(body?.questionId);
+    const requestedTopicId = Number(body?.topicId);
+    const requestedQuestionId = Number(body?.questionId);
+
     const stance =
-      body?.stance === "pro" || body?.stance === "against" ? body.stance : "neutral";
-    const parentTakeId = body?.parentTakeId ? String(body.parentTakeId) : null;
+      body?.stance === "pro" || body?.stance === "against"
+        ? body.stance
+        : "neutral";
+
+    const parentTakeIdRaw = body?.parentTakeId ? String(body.parentTakeId) : null;
     const isChallengeable = !!body?.isChallengeable;
 
-    if (!Number.isFinite(topicId) || !Number.isFinite(questionId)) {
+    if (!Number.isFinite(requestedTopicId) || !Number.isFinite(requestedQuestionId)) {
       return NextResponse.json(
         { error: "Missing or invalid topicId/questionId" },
         { status: 400 }
       );
     }
 
-    // 4) Ensure question belongs to topic
+    // ---------------------------------------------------------
+    // 4) Normalize replies to ROOT:
+    //    - If parentTakeId is provided, it may be root or response.
+    //    - We compute rootTakeId = parent.parent_take_id ?? parent.id
+    //    - We force topic/question to match the ROOT take.
+    // ---------------------------------------------------------
+    let finalParentTakeId: string | null = null;
+    let finalTopicId = requestedTopicId;
+    let finalQuestionId = requestedQuestionId;
+
+    if (parentTakeIdRaw) {
+      // Fetch the referenced take (could be root or response)
+      const { data: parent, error: pErr } = await supabaseAdmin
+        .from("takes")
+        .select("id, parent_take_id, topic_id, question_id")
+        .eq("id", parentTakeIdRaw)
+        .maybeSingle();
+
+      if (pErr || !parent) {
+        return NextResponse.json({ error: "Parent take not found" }, { status: 404 });
+      }
+
+      const rootTakeId = parent.parent_take_id ?? parent.id;
+
+      // Fetch the root take (must exist)
+      const { data: root, error: rErr } = await supabaseAdmin
+        .from("takes")
+        .select("id, parent_take_id, topic_id, question_id")
+        .eq("id", rootTakeId)
+        .maybeSingle();
+
+      if (rErr || !root) {
+        return NextResponse.json({ error: "Root take not found" }, { status: 404 });
+      }
+
+      // Root must actually be root
+      if (root.parent_take_id) {
+        return NextResponse.json(
+          { error: "Invalid root take (root take cannot have a parent)." },
+          { status: 400 }
+        );
+      }
+
+      // Force reply to attach to ROOT (no branching)
+      finalParentTakeId = root.id;
+
+      // Force topic/question to match ROOT (prevents mismatch issues)
+      finalTopicId = root.topic_id;
+      finalQuestionId = root.question_id;
+
+      // Optional: if client sent different values, fail loudly (helps debugging)
+      if (requestedTopicId !== finalTopicId || requestedQuestionId !== finalQuestionId) {
+        return NextResponse.json(
+          { error: "Reply must match the root take's topic/question." },
+          { status: 400 }
+        );
+      }
+    }
+
+    // 5) Ensure question belongs to topic (using FINAL ids)
     const { data: qRow, error: qErr } = await supabaseAdmin
       .from("questions")
       .select("id, topic_id, is_active")
-      .eq("id", questionId)
+      .eq("id", finalQuestionId)
       .maybeSingle();
 
     if (qErr || !qRow) {
       return NextResponse.json({ error: "Question not found" }, { status: 404 });
     }
-    if (qRow.topic_id !== topicId) {
+    if (qRow.topic_id !== finalTopicId) {
       return NextResponse.json(
         { error: "Question does not belong to the selected topic" },
         { status: 400 }
@@ -87,34 +150,6 @@ export async function POST(req: NextRequest) {
     }
     if (qRow.is_active === false) {
       return NextResponse.json({ error: "Question is not active" }, { status: 400 });
-    }
-
-    // 5) If replying, validate parentTakeId exists AND is a root take
-    if (parentTakeId) {
-      const { data: parent, error: pErr } = await supabaseAdmin
-        .from("takes")
-        .select("id, parent_take_id, topic_id, question_id")
-        .eq("id", parentTakeId)
-        .maybeSingle();
-
-      if (pErr || !parent) {
-        return NextResponse.json({ error: "Parent take not found" }, { status: 404 });
-      }
-
-      if (parent.parent_take_id) {
-        return NextResponse.json(
-          { error: "Replies can only attach to a root take (no branching)." },
-          { status: 400 }
-        );
-      }
-
-      // Optional safety: force reply to same topic/question as parent (prevents mismatch)
-      if (parent.topic_id !== topicId || parent.question_id !== questionId) {
-        return NextResponse.json(
-          { error: "Reply must match the parent take's topic/question." },
-          { status: 400 }
-        );
-      }
     }
 
     // 6) Create Mux Direct Upload (signed upload URL)
@@ -156,9 +191,9 @@ export async function POST(req: NextRequest) {
       .from("takes")
       .insert({
         user_id: user.id,
-        topic_id: topicId,
-        question_id: questionId,
-        parent_take_id: parentTakeId,
+        topic_id: finalTopicId,
+        question_id: finalQuestionId,
+        parent_take_id: finalParentTakeId, // ALWAYS root when replying
         stance,
         is_challengeable: isChallengeable,
 

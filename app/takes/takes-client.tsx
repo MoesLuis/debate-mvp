@@ -61,7 +61,17 @@ async function ensureHlsJsLoaded() {
 
 type ViewMode =
   | { kind: "feed" }
-  | { kind: "thread"; parentTakeId: string; stance: "against" | "for" };
+  | {
+      kind: "thread";
+      rootTakeId: string;
+      stance: "against" | "for";
+      entryTakeId: string; // the take user was watching when they entered thread browsing
+    }
+  | {
+      kind: "original";
+      rootTakeId: string;
+      returnTakeId: string; // the response take user was watching
+    };
 
 export default function TakesClient() {
   const router = useRouter();
@@ -76,18 +86,22 @@ export default function TakesClient() {
   // Current user
   const [userId, setUserId] = useState<string | null>(null);
 
-  // Following feed state (main list)
+  // Feed takes (root + responses)
   const [takes, setTakes] = useState<TakeRow[]>([]);
   const [loadingFeed, setLoadingFeed] = useState(false);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Thread state (replies list)
+  // Thread browsing (filtered stance replies under a root)
   const [viewMode, setViewMode] = useState<ViewMode>({ kind: "feed" });
   const [threadTakes, setThreadTakes] = useState<TakeRow[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
   const [threadIndex, setThreadIndex] = useState(0);
+
+  // Show original (root take)
+  const [originalTake, setOriginalTake] = useState<TakeRow | null>(null);
+  const [loadingOriginal, setLoadingOriginal] = useState(false);
 
   // Reaction state
   const [liked, setLiked] = useState(false);
@@ -96,19 +110,28 @@ export default function TakesClient() {
 
   // Join take stance picker
   const [joinPickerOpen, setJoinPickerOpen] = useState(false);
-  const [joinParentId, setJoinParentId] = useState<string | null>(null);
+  const [joinRootId, setJoinRootId] = useState<string | null>(null);
 
   // Video playback refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsInstanceRef = useRef<any>(null);
 
   const showingThread = viewMode.kind === "thread";
+  const showingOriginal = viewMode.kind === "original";
 
-  const visibleList = showingThread ? threadTakes : takes;
-  const visibleIndex = showingThread ? threadIndex : activeIndex;
+  const visibleList: TakeRow[] = useMemo(() => {
+    if (showingOriginal) return originalTake ? [originalTake] : [];
+    if (showingThread) return threadTakes;
+    return takes;
+  }, [showingOriginal, originalTake, showingThread, threadTakes, takes]);
+
+  const visibleIndex = showingOriginal ? 0 : showingThread ? threadIndex : activeIndex;
   const activeTake = visibleList[visibleIndex];
 
-  const isRootTake = !!activeTake && !activeTake.parent_take_id;
+  const activeRootId = useMemo(() => {
+    if (!activeTake) return null;
+    return activeTake.parent_take_id ?? activeTake.id;
+  }, [activeTake]);
 
   /* ---------------- USER ---------------- */
   useEffect(() => {
@@ -120,15 +143,15 @@ export default function TakesClient() {
     })();
   }, []);
 
-  /* ---------------- LOAD EXPLORE TOPICS ---------------- */
+  /* ---------------- LOAD TOPICS (Explore grid) ---------------- */
   useEffect(() => {
     if (!isFollowing) {
-      loadExploreData();
+      loadExploreTopics();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFollowing]);
 
-  async function loadExploreData() {
+  async function loadExploreTopics() {
     setLoadingTopics(true);
 
     const {
@@ -195,28 +218,36 @@ export default function TakesClient() {
     }
   }
 
-  /* ---------------- FOLLOWING FEED ---------------- */
+  /* ---------------- FEED LOADERS ---------------- */
   useEffect(() => {
-    if (!isFollowing) return;
-
     let channel: any;
 
     async function init() {
-      await loadFollowedTopicsAndFeed();
+      // Reset any special mode when switching tabs (keeps it sane)
+      setViewMode({ kind: "feed" });
+      setThreadTakes([]);
+      setThreadIndex(0);
+      setOriginalTake(null);
 
-      channel = supabase
-        .channel("takes-following-user-topics")
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "user_topics" },
-          async () => {
-            setViewMode({ kind: "feed" });
-            setThreadTakes([]);
-            setThreadIndex(0);
-            await loadFollowedTopicsAndFeed();
-          }
-        )
-        .subscribe();
+      await loadFeed();
+
+      // Only subscribe to topic changes when in following tab
+      if (isFollowing) {
+        channel = supabase
+          .channel("takes-following-user-topics")
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "user_topics" },
+            async () => {
+              setViewMode({ kind: "feed" });
+              setThreadTakes([]);
+              setThreadIndex(0);
+              setOriginalTake(null);
+              await loadFeed();
+            }
+          )
+          .subscribe();
+      }
     }
 
     init();
@@ -227,7 +258,7 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFollowing]);
 
-  async function loadFollowedTopicsAndFeed() {
+  async function loadFeed() {
     setFeedError(null);
     setLoadingFeed(true);
 
@@ -242,6 +273,36 @@ export default function TakesClient() {
       return;
     }
 
+    if (!isFollowing) {
+      // EXPLORE FEED: all takes (root + response)
+      const { data, error } = await supabase
+        .from("takes")
+        .select(
+          "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+        )
+        .eq("status", "ready")
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+      if (error) {
+        setFeedError("Could not load explore feed.");
+        setTakes([]);
+        setLoadingFeed(false);
+        return;
+      }
+
+      const rows = ((data ?? []) as unknown as TakeRow[]).map((r) => ({
+        ...r,
+        topics: Array.isArray(r.topics) ? r.topics : r.topics ? [r.topics as any] : null,
+      }));
+
+      setTakes(rows);
+      setActiveIndex(0);
+      setLoadingFeed(false);
+      return;
+    }
+
+    // FOLLOWING FEED: topics you follow, but includes root + response
     const { data: followedData, error: fErr } = await supabase
       .from("user_topics")
       .select("topic_id")
@@ -266,17 +327,15 @@ export default function TakesClient() {
       return;
     }
 
-    // ✅ IMPORTANT: only root takes in main feed
     const { data: takesData, error: tErr } = await supabase
       .from("takes")
       .select(
         "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
       )
       .eq("status", "ready")
-      .is("parent_take_id", null)
       .in("topic_id", topicIds)
       .order("created_at", { ascending: false })
-      .limit(25);
+      .limit(50);
 
     if (tErr) {
       setFeedError("Could not load takes feed.");
@@ -295,8 +354,8 @@ export default function TakesClient() {
   }
 
   /* ---------------- THREAD LOADERS ---------------- */
-  async function openThread(parentTakeId: string, stance: "against" | "for") {
-    setViewMode({ kind: "thread", parentTakeId, stance });
+  async function openThread(rootTakeId: string, stance: "against" | "for", entryTakeId: string) {
+    setViewMode({ kind: "thread", rootTakeId, stance, entryTakeId });
     setThreadError(null);
     setLoadingThread(true);
     setThreadIndex(0);
@@ -309,9 +368,9 @@ export default function TakesClient() {
         "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
       )
       .eq("status", "ready")
-      .eq("parent_take_id", parentTakeId)
+      .eq("parent_take_id", rootTakeId)
       .order("created_at", { ascending: false })
-      .limit(25);
+      .limit(50);
 
     const { data, error } =
       stance === "against"
@@ -331,19 +390,83 @@ export default function TakesClient() {
     }));
 
     setThreadTakes(rows);
+    setThreadIndex(0);
     setLoadingThread(false);
   }
 
-  function closeThread() {
+  function backToEntryInThread() {
+    if (viewMode.kind !== "thread") return;
+    const entryId = viewMode.entryTakeId;
+
+    // Return to feed at the exact take you entered from
+    const idx = takes.findIndex((t) => t.id === entryId);
     setViewMode({ kind: "feed" });
     setThreadTakes([]);
     setThreadIndex(0);
+
+    if (idx >= 0) {
+      setActiveIndex(idx);
+    } else {
+      // If not found (due to different tab/filter), fallback to feed start
+      setActiveIndex(0);
+    }
+  }
+
+  /* ---------------- ORIGINAL (ROOT) LOADER ---------------- */
+  async function showOriginal() {
+    if (!activeTake) return;
+    const rootId = activeTake.parent_take_id;
+    if (!rootId) return;
+
+    setLoadingOriginal(true);
+    setOriginalTake(null);
+
+    const { data, error } = await supabase
+      .from("takes")
+      .select(
+        "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+      )
+      .eq("id", rootId)
+      .maybeSingle();
+
+    if (error || !data) {
+      setLoadingOriginal(false);
+      alert("Could not load original take.");
+      return;
+    }
+
+    const rootRow = {
+      ...(data as unknown as TakeRow),
+      topics: Array.isArray((data as any).topics)
+        ? (data as any).topics
+        : (data as any).topics
+        ? [(data as any).topics]
+        : null,
+    };
+
+    setOriginalTake(rootRow);
+    setViewMode({ kind: "original", rootTakeId: rootId, returnTakeId: activeTake.id });
+    setLoadingOriginal(false);
+  }
+
+  function backToThreadFromOriginal() {
+    if (viewMode.kind !== "original") return;
+    const returnId = viewMode.returnTakeId;
+
+    setViewMode({ kind: "feed" });
+    setOriginalTake(null);
+
+    const idx = takes.findIndex((t) => t.id === returnId);
+    if (idx >= 0) {
+      setActiveIndex(idx);
+    } else {
+      setActiveIndex(0);
+    }
   }
 
   /* ---------------- VIDEO ATTACH ---------------- */
   useEffect(() => {
-    if (!isFollowing) return;
-
+    // clean old instance
     if (hlsInstanceRef.current) {
       try {
         hlsInstanceRef.current.destroy();
@@ -400,38 +523,43 @@ export default function TakesClient() {
 
     attach();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFollowing, activeTake?.id]);
+  }, [activeTake?.id]);
 
-  /* ---------------- navigation controls ---------------- */
+  /* ---------------- NAV (feed + thread) ---------------- */
   function next() {
+    if (showingOriginal) return;
+
     if (showingThread) {
       setThreadIndex((i) => Math.min(i + 1, Math.max(0, threadTakes.length - 1)));
-    } else {
-      setActiveIndex((i) => Math.min(i + 1, Math.max(0, takes.length - 1)));
+      return;
     }
+
+    setActiveIndex((i) => Math.min(i + 1, Math.max(0, takes.length - 1)));
   }
 
   function prev() {
+    if (showingOriginal) return;
+
     if (showingThread) {
       setThreadIndex((i) => Math.max(i - 1, 0));
-    } else {
-      setActiveIndex((i) => Math.max(i - 1, 0));
+      return;
     }
+
+    setActiveIndex((i) => Math.max(i - 1, 0));
   }
 
   useEffect(() => {
-    if (!isFollowing) return;
-
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "ArrowDown") next();
       if (e.key === "ArrowUp") prev();
-      if (e.key === "Escape" && showingThread) closeThread();
+      if (e.key === "Escape" && showingThread) backToEntryInThread();
+      if (e.key === "Escape" && showingOriginal) backToThreadFromOriginal();
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFollowing, showingThread, takes.length, threadTakes.length]);
+  }, [showingThread, showingOriginal, takes.length, threadTakes.length]);
 
   const activeTopicName = activeTake?.topics?.[0]?.name ?? "Topic";
 
@@ -507,42 +635,50 @@ export default function TakesClient() {
     }
   }
 
-  /* ---------------- thread buttons ---------------- */
+  /* ---------------- THREAD BROWSING BUTTONS ---------------- */
   async function handleAgainst() {
-    if (!activeTake?.id) return;
-    const rootId =
-      viewMode.kind === "thread"
-        ? viewMode.parentTakeId
-        : activeTake.id; // feed is root-only
-    await openThread(rootId, "against");
+    if (!activeTake?.id || !activeRootId) return;
+
+    // If already browsing "Against" thread, advance
+    if (viewMode.kind === "thread" && viewMode.stance === "against") {
+      setThreadIndex((i) => Math.min(i + 1, Math.max(0, threadTakes.length - 1)));
+      return;
+    }
+
+    // Enter thread browsing from current take (root or response)
+    await openThread(activeRootId, "against", activeTake.id);
   }
 
   async function handleInFavor() {
-    if (!activeTake?.id) return;
-    const rootId =
-      viewMode.kind === "thread"
-        ? viewMode.parentTakeId
-        : activeTake.id; // feed is root-only
-    await openThread(rootId, "for");
+    if (!activeTake?.id || !activeRootId) return;
+
+    // If already browsing "In favor" thread, advance
+    if (viewMode.kind === "thread" && viewMode.stance === "for") {
+      setThreadIndex((i) => Math.min(i + 1, Math.max(0, threadTakes.length - 1)));
+      return;
+    }
+
+    await openThread(activeRootId, "for", activeTake.id);
   }
 
+  /* ---------------- JOIN TAKE (reply-to-root always) ---------------- */
   function openJoinPicker() {
-    if (!activeTake?.id) return;
-    if (!isRootTake) return; // only root takes can be joined
-    setJoinParentId(activeTake.id);
+    if (!activeRootId) return;
+    setJoinRootId(activeRootId);
     setJoinPickerOpen(true);
   }
 
   function joinTake(stance: "pro" | "against") {
-    if (!joinParentId) return;
+    if (!joinRootId) return;
     setJoinPickerOpen(false);
-    router.push(`/takes/record?parentTakeId=${joinParentId}&stance=${stance}`);
+    router.push(`/takes/record?parentTakeId=${joinRootId}&stance=${stance}`);
   }
 
   function handleLiveDebate() {
-    // Coming next: show who wants to debate / queue
     alert("Live debate requests are coming next 😈");
   }
+
+  const showShowOriginalButton = !!activeTake?.parent_take_id && !showingOriginal;
 
   return (
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
@@ -554,7 +690,7 @@ export default function TakesClient() {
           <div className="w-full max-w-sm rounded-lg border border-zinc-300 bg-white p-4">
             <div className="text-lg font-semibold">Join this take</div>
             <p className="text-sm text-zinc-600 mt-1">
-              Choose how you’re replying to the thread starter:
+              Choose how you’re replying to the original take:
             </p>
 
             <div className="mt-4 grid grid-cols-2 gap-3">
@@ -582,111 +718,140 @@ export default function TakesClient() {
         </div>
       )}
 
-      {/* FOLLOWING TAB */}
-      {isFollowing && (
-        <div className="mt-6 relative">
-          {loadingFeed ? (
-            <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
-              <div className="text-center">
-                <div className="text-2xl font-semibold mb-2">Loading feed…</div>
-                <p className="text-sm text-zinc-600">Pulling takes from your topics</p>
-              </div>
+      {/* FEED AREA (works for Following + Explore) */}
+      <div className="mt-6 relative">
+        {loadingFeed ? (
+          <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
+            <div className="text-center">
+              <div className="text-2xl font-semibold mb-2">Loading…</div>
+              <p className="text-sm text-zinc-600">
+                {isFollowing ? "Pulling takes from your topics" : "Exploring all takes"}
+              </p>
             </div>
-          ) : feedError ? (
-            <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
-              <div className="text-center">
-                <div className="text-xl font-semibold mb-2">Couldn’t load</div>
-                <p className="text-sm text-zinc-600">{feedError}</p>
+          </div>
+        ) : feedError ? (
+          <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
+            <div className="text-center">
+              <div className="text-xl font-semibold mb-2">Couldn’t load</div>
+              <p className="text-sm text-zinc-600">{feedError}</p>
+              <button
+                onClick={() => loadFeed()}
+                className="mt-4 px-4 py-2 rounded border border-zinc-400 bg-white hover:bg-zinc-50 text-sm"
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        ) : visibleList.length === 0 ? (
+          <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
+            <div className="text-center">
+              <div className="text-2xl font-semibold mb-2">No takes yet</div>
+              <p className="text-sm text-zinc-600">
+                Record the first take for one of your topics.
+              </p>
+              <button
+                onClick={() => router.push("/takes/record")}
+                className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90"
+              >
+                Record a take
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative">
+            <video
+              ref={videoRef}
+              className="w-full h-full object-contain bg-black"
+              playsInline
+              controls
+            />
+
+            {/* Top-left overlay */}
+            <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
+              <div className="font-medium">
+                {activeTopicName}
+                {showingThread ? (
+                  <span className="ml-2 text-xs opacity-80">(thread)</span>
+                ) : null}
+                {showingOriginal ? (
+                  <span className="ml-2 text-xs opacity-80">(original)</span>
+                ) : null}
+              </div>
+
+              <div className="text-xs opacity-80">
+                {visibleIndex + 1} / {visibleList.length}
+              </div>
+
+              {/* Show original / back to thread */}
+              {showShowOriginalButton && (
                 <button
-                  onClick={() => loadFollowedTopicsAndFeed()}
-                  className="mt-4 px-4 py-2 rounded border border-zinc-400 bg-white hover:bg-zinc-50 text-sm"
+                  onClick={showOriginal}
+                  className="mt-2 text-xs underline opacity-90 hover:opacity-100"
                 >
-                  Retry
+                  {loadingOriginal ? "Loading original…" : "Show original"}
                 </button>
-              </div>
-            </div>
-          ) : takes.length === 0 ? (
-            <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
-              <div className="text-center">
-                <div className="text-2xl font-semibold mb-2">No takes yet</div>
-                <p className="text-sm text-zinc-600">
-                  Record the first take for one of your topics.
-                </p>
+              )}
+
+              {showingOriginal && viewMode.kind === "original" && (
                 <button
-                  onClick={() => router.push("/takes/record")}
-                  className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90"
+                  onClick={backToThreadFromOriginal}
+                  className="mt-2 text-xs underline opacity-90 hover:opacity-100"
                 >
-                  Record a take
+                  ← Back to thread
                 </button>
-              </div>
+              )}
             </div>
-          ) : (
-            <div className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative">
-              <video
-                ref={videoRef}
-                className="w-full h-full object-contain bg-black"
-                playsInline
-                controls
-              />
 
-              <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
-                <div className="font-medium">
-                  {activeTopicName}
-                  {showingThread ? (
-                    <span className="ml-2 text-xs opacity-80">(thread)</span>
-                  ) : null}
+            {/* Thread empty state overlay */}
+            {showingThread && !loadingThread && threadTakes.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
+                  No replies on this side yet.
                 </div>
-
-                <div className="text-xs opacity-80">
-                  {visibleIndex + 1} / {visibleList.length}
-                </div>
-
-                {showingThread && (
-                  <button
-                    onClick={closeThread}
-                    className="mt-2 text-xs underline opacity-90 hover:opacity-100"
-                  >
-                    ← Back to feed
-                  </button>
-                )}
               </div>
+            )}
 
-              {showingThread && !loadingThread && threadTakes.length === 0 && (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
-                    No replies in this thread yet.
+            {/* Thread loading/error */}
+            {showingThread && loadingThread && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
+                  Loading thread…
+                </div>
+              </div>
+            )}
+            {showingThread && threadError && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm text-center">
+                  {threadError}
+                  <div className="mt-2">
+                    <button
+                      onClick={() => {
+                        if (viewMode.kind === "thread") {
+                          openThread(viewMode.rootTakeId, viewMode.stance, viewMode.entryTakeId);
+                        }
+                      }}
+                      className="px-3 py-1 rounded bg-white/90 text-black text-xs"
+                    >
+                      Retry
+                    </button>
                   </div>
                 </div>
-              )}
+              </div>
+            )}
 
-              {showingThread && loadingThread && (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
-                    Loading thread…
-                  </div>
-                </div>
-              )}
+            {/* Center-left Back button while browsing thread (returns to entry take) */}
+            {showingThread && (
+              <button
+                onClick={backToEntryInThread}
+                className="absolute left-4 top-1/2 -translate-y-1/2 px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm"
+                title="Back to the take you started from"
+              >
+                Back
+              </button>
+            )}
 
-              {showingThread && threadError && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm text-center">
-                    {threadError}
-                    <div className="mt-2">
-                      <button
-                        onClick={() => {
-                          if (viewMode.kind === "thread") {
-                            openThread(viewMode.parentTakeId, viewMode.stance);
-                          }
-                        }}
-                        className="px-3 py-1 rounded bg-white/90 text-black text-xs"
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
+            {/* Prev/Next (disabled in original mode) */}
+            {!showingOriginal && (
               <div className="absolute left-4 bottom-4 flex gap-2">
                 <button
                   onClick={prev}
@@ -703,12 +868,12 @@ export default function TakesClient() {
                   ↓ Next
                 </button>
               </div>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        )}
+      </div>
 
-      {/* EXPLORE TAB */}
+      {/* EXPLORE: keep topic discovery grid under the feed */}
       {!isFollowing && (
         <div className="mt-6">
           <h2 className="text-lg font-semibold mb-4">Discover Topics</h2>
@@ -744,12 +909,15 @@ export default function TakesClient() {
       <div className="fixed right-6 top-1/2 -translate-y-1/2 flex flex-col gap-3">
         <button
           onClick={() => {
-            if (showingThread) closeThread();
+            // If in original view, return to thread/video
+            if (showingOriginal) backToThreadFromOriginal();
+            // If in thread browse, return to entry
+            if (showingThread) backToEntryInThread();
           }}
           className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs"
-          title={showingThread ? "Back to feed" : "Topic"}
+          title={showingOriginal ? "Back to thread" : showingThread ? "Back" : "Topic"}
         >
-          {showingThread ? "Back" : "Topic"}
+          {showingOriginal ? "Back" : showingThread ? "Back" : "Topic"}
         </button>
 
         <button
@@ -759,11 +927,12 @@ export default function TakesClient() {
           Profile
         </button>
 
+        {/* Against: cycles through against replies for current root */}
         <button
           onClick={handleAgainst}
-          disabled={!activeTake?.id}
+          disabled={!activeTake?.id || !activeRootId}
           className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs disabled:opacity-50"
-          title="View replies against this take"
+          title="Browse against replies (latest → next)"
         >
           Against
         </button>
@@ -780,21 +949,18 @@ export default function TakesClient() {
           <div className="text-[10px] opacity-80 mt-1">{likeCount}</div>
         </button>
 
-        {/* ✅ Join take appears ONLY for root take and only in feed view */}
-        {!showingThread && isRootTake ? (
-          <button
-            onClick={openJoinPicker}
-            className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs"
-            title="Reply to this take (thread starter)"
-          >
-            Join
-            <div className="text-[10px] opacity-80 mt-1">take</div>
-          </button>
-        ) : (
-          <div className="w-14 h-14 rounded border border-transparent bg-transparent" />
-        )}
+        {/* Join take: always available; replies attach to root */}
+        <button
+          onClick={openJoinPicker}
+          disabled={!activeRootId}
+          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs disabled:opacity-50"
+          title="Reply to the original take"
+        >
+          Join
+          <div className="text-[10px] opacity-80 mt-1">take</div>
+        </button>
 
-        {/* ✅ Live debate button: only if take is challengeable */}
+        {/* Live debate: allowed for any take if challengeable */}
         {activeTake?.is_challengeable ? (
           <button
             onClick={handleLiveDebate}
@@ -808,11 +974,12 @@ export default function TakesClient() {
           <div className="w-14 h-14 rounded border border-transparent bg-transparent" />
         )}
 
+        {/* In favor: cycles through in-favor replies for current root */}
         <button
           onClick={handleInFavor}
-          disabled={!activeTake?.id}
+          disabled={!activeTake?.id || !activeRootId}
           className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs disabled:opacity-50"
-          title="View replies in favor of this take"
+          title="Browse in-favor replies (latest → next)"
         >
           In favor
         </button>

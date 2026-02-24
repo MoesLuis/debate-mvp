@@ -19,10 +19,13 @@ export default function RecordTakeClient() {
   const router = useRouter();
   const params = useSearchParams();
 
-  // ✅ Reply / thread params
+  // Reply / thread params (can be root or a response; we will normalize to root)
   const parentTakeIdParam = params.get("parentTakeId");
   const stanceParam = params.get("stance");
   const isReply = !!parentTakeIdParam;
+
+  // Root id (normalized)
+  const [rootTakeId, setRootTakeId] = useState<string | null>(null);
 
   // Recording state
   const streamRef = useRef<MediaStream | null>(null);
@@ -38,6 +41,9 @@ export default function RecordTakeClient() {
   const [topicId, setTopicId] = useState<number | null>(null);
   const [questionId, setQuestionId] = useState<number | null>(null);
 
+  // Locking for replies
+  const [lockedTopicQuestion, setLockedTopicQuestion] = useState(false);
+
   // Metadata
   const [stance, setStance] = useState<"neutral" | "pro" | "against">(
     normalizeStance(stanceParam)
@@ -49,14 +55,14 @@ export default function RecordTakeClient() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    // If URL param stance changes (rare), sync
     setStance(normalizeStance(stanceParam));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stanceParam]);
 
   useEffect(() => {
-    // If this is a reply, default: not challengeable
-    if (isReply) setIsChallengeable(false);
+    // Replies default: still allowed to be challengeable per your new rule
+    // (so do NOT force false anymore)
+    // But we DO lock topic/question.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReply, parentTakeIdParam]);
 
@@ -66,12 +72,85 @@ export default function RecordTakeClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // When topic changes (non-reply), refresh questions
   useEffect(() => {
+    if (lockedTopicQuestion) return; // replies: we set questions via root load
     if (topicId) loadQuestions(topicId);
     else setQuestions([]);
     setQuestionId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topicId]);
+  }, [topicId, lockedTopicQuestion]);
+
+  // If reply: resolve root + lock topic/question to root
+  useEffect(() => {
+    if (!isReply || !parentTakeIdParam) {
+      setRootTakeId(null);
+      setLockedTopicQuestion(false);
+      return;
+    }
+
+    (async () => {
+      try {
+        setStatus("Loading thread info…");
+
+        // 1) Get referenced take (could be root or response)
+        const { data: parent, error: pErr } = await supabase
+          .from("takes")
+          .select("id, parent_take_id, topic_id, question_id")
+          .eq("id", parentTakeIdParam)
+          .maybeSingle();
+
+        if (pErr || !parent) {
+          setStatus("Could not load parent take.");
+          return;
+        }
+
+        const resolvedRootId = parent.parent_take_id ?? parent.id;
+
+        // 2) Get root take (authoritative topic/question)
+        const { data: root, error: rErr } = await supabase
+          .from("takes")
+          .select("id, topic_id, question_id")
+          .eq("id", resolvedRootId)
+          .maybeSingle();
+
+        if (rErr || !root) {
+          setStatus("Could not load root take.");
+          return;
+        }
+
+        setRootTakeId(root.id);
+        setLockedTopicQuestion(true);
+
+        // 3) Lock selects to root’s topic/question
+        setTopicId(root.topic_id);
+        setQuestionId(root.question_id);
+
+        // 4) Load questions list for UI display (so the question shows in dropdown)
+        const { data: qData, error: qListErr } = await supabase
+          .from("questions")
+          .select("id, question")
+          .eq("topic_id", root.topic_id)
+          .eq("is_active", true)
+          .order("id");
+
+        if (!qListErr) {
+          setQuestions(
+            (qData ?? []).map((q: any) => ({
+              id: Number(q.id),
+              question: q.question,
+            }))
+          );
+        }
+
+        setStatus("");
+      } catch (e) {
+        console.error(e);
+        setStatus("Could not load thread info.");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReply, parentTakeIdParam]);
 
   const canRecord = useMemo(
     () => !!topicId && !!questionId && !busy,
@@ -118,7 +197,9 @@ export default function RecordTakeClient() {
     mapped.sort((a, b) => a.name.localeCompare(b.name));
     setTopics(mapped);
 
-    if (mapped.length > 0) setTopicId(mapped[0].id);
+    // Only auto-pick first topic if NOT a reply (replies will lock topicId)
+    if (!isReply && mapped.length > 0) setTopicId(mapped[0].id);
+
     setStatus("");
   }
 
@@ -198,7 +279,6 @@ export default function RecordTakeClient() {
         const url = URL.createObjectURL(blob);
         setPreviewUrl(url);
 
-        // Stop camera
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((t) => t.stop());
           streamRef.current = null;
@@ -239,8 +319,8 @@ export default function RecordTakeClient() {
       return;
     }
 
-    // ✅ If this is a reply, enforce non-challengeable
-    const finalIsChallengeable = isReply ? false : isChallengeable;
+    // If reply: ALWAYS send normalized root id
+    const normalizedParentTakeId = isReply ? (rootTakeId ?? parentTakeIdParam) : null;
 
     // 1) Ask server for signed Mux upload URL + takeId
     const createRes = await fetch("/api/takes/create-upload", {
@@ -253,8 +333,8 @@ export default function RecordTakeClient() {
         topicId,
         questionId,
         stance,
-        parentTakeId: parentTakeIdParam || null,
-        isChallengeable: finalIsChallengeable,
+        parentTakeId: normalizedParentTakeId || null,
+        isChallengeable, // per your rule: EVERY take (root or reply) can be challengeable
       }),
     });
 
@@ -298,7 +378,6 @@ export default function RecordTakeClient() {
     setStatus("Uploaded ✅ Processing in Mux… (this may take a moment)");
     setBusy(false);
 
-    // MVP: send back to feed
     setTimeout(() => router.push("/takes"), 900);
   }
 
@@ -306,18 +385,12 @@ export default function RecordTakeClient() {
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold">
-            {isReply ? "Record a Reply" : "Record a Take"}
-          </h1>
+          <h1 className="text-xl font-semibold">{isReply ? "Record a Reply" : "Record a Take"}</h1>
           {isReply && (
             <p className="text-sm text-zinc-700 mt-1">
-              Replying to a take (thread). Your reply will show under{" "}
+              Replying to the thread starter. Your reply will appear under{" "}
               <strong>
-                {stance === "against"
-                  ? "Against"
-                  : stance === "pro"
-                  ? "In favor"
-                  : "Neutral"}
+                {stance === "against" ? "Against" : stance === "pro" ? "In favor" : "Neutral"}
               </strong>
               .
             </p>
@@ -338,13 +411,12 @@ export default function RecordTakeClient() {
           <label className="block text-sm font-medium">Topic</label>
           <select
             value={topicId ?? ""}
+            disabled={lockedTopicQuestion}
             onChange={(e) => setTopicId(Number(e.target.value))}
-            className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm"
+            className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm disabled:opacity-70"
           >
             {topics.length === 0 ? (
-              <option value="">
-                (No topics followed — add topics in Profile)
-              </option>
+              <option value="">(No topics followed — add topics in Profile)</option>
             ) : (
               topics.map((t) => (
                 <option key={t.id} value={t.id}>
@@ -357,8 +429,9 @@ export default function RecordTakeClient() {
           <label className="block text-sm font-medium mt-4">Question</label>
           <select
             value={questionId ?? ""}
+            disabled={lockedTopicQuestion}
             onChange={(e) => setQuestionId(Number(e.target.value))}
-            className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm"
+            className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm disabled:opacity-70"
           >
             {questions.length === 0 ? (
               <option value="">(No questions for this topic yet)</option>
@@ -370,6 +443,12 @@ export default function RecordTakeClient() {
               ))
             )}
           </select>
+
+          {lockedTopicQuestion && (
+            <div className="mt-2 text-xs text-zinc-600">
+              Topic + Question are locked to the thread starter.
+            </div>
+          )}
 
           <div className="mt-4 grid grid-cols-2 gap-3">
             <div>
@@ -385,13 +464,6 @@ export default function RecordTakeClient() {
                 <option value="pro">In favor</option>
                 <option value="against">Against</option>
               </select>
-
-              {isReply && (
-                <div className="text-xs text-zinc-600 mt-2">
-                  Tip: For replies, stance controls whether it appears under{" "}
-                  <strong>Against</strong> or <strong>In favor</strong>.
-                </div>
-              )}
             </div>
 
             <div className="flex items-end">
@@ -399,7 +471,6 @@ export default function RecordTakeClient() {
                 <input
                   type="checkbox"
                   checked={isChallengeable}
-                  disabled={isReply}
                   onChange={(e) => setIsChallengeable(e.target.checked)}
                 />
                 Challengeable
@@ -407,16 +478,9 @@ export default function RecordTakeClient() {
             </div>
           </div>
 
-          {isReply ? (
-            <div className="mt-4 text-xs text-zinc-700">
-              Challengeable is disabled for replies.
-            </div>
-          ) : (
-            <div className="mt-4 text-xs text-zinc-600">
-              Tip: If you have no topics here, go to <strong>Profile</strong>{" "}
-              and select topics first.
-            </div>
-          )}
+          <div className="mt-4 text-xs text-zinc-600">
+            Challengeable = “open to live debate” (root or reply).
+          </div>
         </div>
 
         {/* Right: recorder */}
@@ -478,7 +542,13 @@ export default function RecordTakeClient() {
 
       {isReply && (
         <div className="mt-4 text-xs text-zinc-700">
-          Parent take id: <span className="font-mono">{parentTakeIdParam}</span>
+          Parent param: <span className="font-mono">{parentTakeIdParam}</span>
+          {rootTakeId && (
+            <>
+              {" "}
+              • Root: <span className="font-mono">{rootTakeId}</span>
+            </>
+          )}
         </div>
       )}
     </div>
