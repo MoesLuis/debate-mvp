@@ -89,16 +89,21 @@ export default function TakesClient() {
   const [threadError, setThreadError] = useState<string | null>(null);
   const [threadIndex, setThreadIndex] = useState(0);
 
-  // Reaction state for the *currently visible* take
+  // Reaction state
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState<number>(0);
   const [likingBusy, setLikingBusy] = useState(false);
+
+  // Join take stance picker
+  const [joinPickerOpen, setJoinPickerOpen] = useState(false);
+  const [joinParentId, setJoinParentId] = useState<string | null>(null);
 
   // Video playback refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsInstanceRef = useRef<any>(null);
 
   const showingThread = viewMode.kind === "thread";
+
   const visibleList = showingThread ? threadTakes : takes;
   const visibleIndex = showingThread ? threadIndex : activeIndex;
   const activeTake = visibleList[visibleIndex];
@@ -190,7 +195,7 @@ export default function TakesClient() {
     }
   }
 
-  /* ---------------- FOLLOWING FEED: load followed topics + takes ---------------- */
+  /* ---------------- FOLLOWING FEED ---------------- */
   useEffect(() => {
     if (!isFollowing) return;
 
@@ -205,7 +210,6 @@ export default function TakesClient() {
           "postgres_changes",
           { event: "*", schema: "public", table: "user_topics" },
           async () => {
-            // If topics change, reset thread view back to feed (keeps UX sane)
             setViewMode({ kind: "feed" });
             setThreadTakes([]);
             setThreadIndex(0);
@@ -262,15 +266,15 @@ export default function TakesClient() {
       return;
     }
 
-    // ✅ IMPORTANT: Feed only shows ROOT takes (parent_take_id is null)
+    // ✅ IMPORTANT: only root takes in main feed
     const { data: takesData, error: tErr } = await supabase
       .from("takes")
       .select(
         "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
       )
       .eq("status", "ready")
-      .in("topic_id", topicIds)
       .is("parent_take_id", null)
+      .in("topic_id", topicIds)
       .order("created_at", { ascending: false })
       .limit(25);
 
@@ -291,28 +295,28 @@ export default function TakesClient() {
   }
 
   /* ---------------- THREAD LOADERS ---------------- */
-  async function openThread(rootTakeId: string, stance: "against" | "for") {
-    setViewMode({ kind: "thread", parentTakeId: rootTakeId, stance });
+  async function openThread(parentTakeId: string, stance: "against" | "for") {
+    setViewMode({ kind: "thread", parentTakeId, stance });
     setThreadError(null);
     setLoadingThread(true);
     setThreadIndex(0);
 
     const forStances = ["pro", "for", "in_favor"];
 
-    const base = supabase
+    const query = supabase
       .from("takes")
       .select(
         "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
       )
       .eq("status", "ready")
-      .eq("parent_take_id", rootTakeId)
+      .eq("parent_take_id", parentTakeId)
       .order("created_at", { ascending: false })
       .limit(25);
 
     const { data, error } =
       stance === "against"
-        ? await base.eq("stance", "against")
-        : await base.in("stance", forStances);
+        ? await query.eq("stance", "against")
+        : await query.in("stance", forStances);
 
     if (error) {
       setThreadError("Could not load replies.");
@@ -336,11 +340,10 @@ export default function TakesClient() {
     setThreadIndex(0);
   }
 
-  /* ---------------- VIDEO ATTACH: HLS native or hls.js ---------------- */
+  /* ---------------- VIDEO ATTACH ---------------- */
   useEffect(() => {
     if (!isFollowing) return;
 
-    // clean old instance
     if (hlsInstanceRef.current) {
       try {
         hlsInstanceRef.current.destroy();
@@ -381,10 +384,7 @@ export default function TakesClient() {
 
       const Hls = window.Hls;
       if (Hls.isSupported()) {
-        const hls = new Hls({
-          enableWorker: true,
-          lowLatencyMode: true,
-        });
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
         hlsInstanceRef.current = hls;
         hls.loadSource(src);
         hls.attachMedia(v);
@@ -435,7 +435,7 @@ export default function TakesClient() {
 
   const activeTopicName = activeTake?.topics?.[0]?.name ?? "Topic";
 
-  /* ---------------- REACTIONS: load + toggle ---------------- */
+  /* ---------------- REACTIONS ---------------- */
   useEffect(() => {
     setLiked(false);
     setLikeCount(0);
@@ -507,33 +507,82 @@ export default function TakesClient() {
     }
   }
 
-  /* ---------------- button handlers ---------------- */
+  /* ---------------- thread buttons ---------------- */
   async function handleAgainst() {
     if (!activeTake?.id) return;
-    const rootId = showingThread ? viewMode.parentTakeId : activeTake.id;
+    const rootId =
+      viewMode.kind === "thread"
+        ? viewMode.parentTakeId
+        : activeTake.id; // feed is root-only
     await openThread(rootId, "against");
   }
 
   async function handleInFavor() {
     if (!activeTake?.id) return;
-    const rootId = showingThread ? viewMode.parentTakeId : activeTake.id;
+    const rootId =
+      viewMode.kind === "thread"
+        ? viewMode.parentTakeId
+        : activeTake.id; // feed is root-only
     await openThread(rootId, "for");
   }
 
-  function handleJoinTake() {
+  function openJoinPicker() {
     if (!activeTake?.id) return;
-    // ✅ Join take = create ONE reply to the ROOT take (pick stance on record page)
-    router.push(`/takes/record?parentTakeId=${activeTake.id}`);
+    if (!isRootTake) return; // only root takes can be joined
+    setJoinParentId(activeTake.id);
+    setJoinPickerOpen(true);
   }
 
-  function handleLiveChallengeComingNext() {
-    alert("Coming next: live debate challenge 🚧");
+  function joinTake(stance: "pro" | "against") {
+    if (!joinParentId) return;
+    setJoinPickerOpen(false);
+    router.push(`/takes/record?parentTakeId=${joinParentId}&stance=${stance}`);
+  }
+
+  function handleLiveDebate() {
+    // Coming next: show who wants to debate / queue
+    alert("Live debate requests are coming next 😈");
   }
 
   return (
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
       <TakesTopicsRibbon />
 
+      {/* JOIN PICKER MODAL */}
+      {joinPickerOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="w-full max-w-sm rounded-lg border border-zinc-300 bg-white p-4">
+            <div className="text-lg font-semibold">Join this take</div>
+            <p className="text-sm text-zinc-600 mt-1">
+              Choose how you’re replying to the thread starter:
+            </p>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <button
+                onClick={() => joinTake("pro")}
+                className="px-4 py-3 rounded bg-black text-white text-sm hover:opacity-90"
+              >
+                In favor
+              </button>
+              <button
+                onClick={() => joinTake("against")}
+                className="px-4 py-3 rounded border border-zinc-300 bg-white text-sm hover:bg-zinc-50"
+              >
+                Against
+              </button>
+            </div>
+
+            <button
+              onClick={() => setJoinPickerOpen(false)}
+              className="mt-4 w-full px-4 py-2 rounded border border-zinc-300 bg-white text-sm hover:bg-zinc-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* FOLLOWING TAB */}
       {isFollowing && (
         <div className="mt-6 relative">
           {loadingFeed ? (
@@ -560,7 +609,9 @@ export default function TakesClient() {
             <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
               <div className="text-center">
                 <div className="text-2xl font-semibold mb-2">No takes yet</div>
-                <p className="text-sm text-zinc-600">Record the first take for one of your topics.</p>
+                <p className="text-sm text-zinc-600">
+                  Record the first take for one of your topics.
+                </p>
                 <button
                   onClick={() => router.push("/takes/record")}
                   className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90"
@@ -581,7 +632,9 @@ export default function TakesClient() {
               <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
                 <div className="font-medium">
                   {activeTopicName}
-                  {showingThread ? <span className="ml-2 text-xs opacity-80">(thread)</span> : null}
+                  {showingThread ? (
+                    <span className="ml-2 text-xs opacity-80">(thread)</span>
+                  ) : null}
                 </div>
 
                 <div className="text-xs opacity-80">
@@ -655,6 +708,7 @@ export default function TakesClient() {
         </div>
       )}
 
+      {/* EXPLORE TAB */}
       {!isFollowing && (
         <div className="mt-6">
           <h2 className="text-lg font-semibold mb-4">Discover Topics</h2>
@@ -726,27 +780,29 @@ export default function TakesClient() {
           <div className="text-[10px] opacity-80 mt-1">{likeCount}</div>
         </button>
 
-        {/* ✅ Join take: only on ROOT takes in the main feed */}
+        {/* ✅ Join take appears ONLY for root take and only in feed view */}
         {!showingThread && isRootTake ? (
           <button
-            onClick={handleJoinTake}
+            onClick={openJoinPicker}
             className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs"
-            title="Record a reply to this take (in favor / against)"
+            title="Reply to this take (thread starter)"
           >
-            Join take
+            Join
+            <div className="text-[10px] opacity-80 mt-1">take</div>
           </button>
         ) : (
           <div className="w-14 h-14 rounded border border-transparent bg-transparent" />
         )}
 
-        {/* ✅ Challenge: live debate (coming next) — only if the creator enabled it */}
+        {/* ✅ Live debate button: only if take is challengeable */}
         {activeTake?.is_challengeable ? (
           <button
-            onClick={handleLiveChallengeComingNext}
-            className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs"
-            title="Coming next: request a live debate"
+            onClick={handleLiveDebate}
+            className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-[11px]"
+            title="Request a live debate (coming next)"
           >
-            Challenge
+            Live
+            <div className="text-[10px] opacity-80 mt-1">debate</div>
           </button>
         ) : (
           <div className="w-14 h-14 rounded border border-transparent bg-transparent" />

@@ -26,9 +26,6 @@ function muxAuthHeader() {
 
 export async function POST(req: NextRequest) {
   try {
-    // 🔥 Debug log (temporary)
-    console.log("MUX TOKEN ID:", process.env.MUX_TOKEN_ID ? "Loaded" : "Missing");
-
     // 1) Require Bearer token (Supabase session token)
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.startsWith("Bearer ")
@@ -43,9 +40,7 @@ export async function POST(req: NextRequest) {
     const supabaseAuthed = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        global: { headers: { Authorization: `Bearer ${token}` } },
-      }
+      { global: { headers: { Authorization: `Bearer ${token}` } } }
     );
 
     const {
@@ -74,7 +69,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4) Ensure question belongs to topic (prevents mismatched ids)
+    // 4) Ensure question belongs to topic
     const { data: qRow, error: qErr } = await supabaseAdmin
       .from("questions")
       .select("id, topic_id, is_active")
@@ -94,8 +89,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Question is not active" }, { status: 400 });
     }
 
-    // 5) Create Mux Direct Upload (signed upload URL)
-    // Playback policy is PUBLIC for the resulting asset
+    // 5) If replying, validate parentTakeId exists AND is a root take
+    if (parentTakeId) {
+      const { data: parent, error: pErr } = await supabaseAdmin
+        .from("takes")
+        .select("id, parent_take_id, topic_id, question_id")
+        .eq("id", parentTakeId)
+        .maybeSingle();
+
+      if (pErr || !parent) {
+        return NextResponse.json({ error: "Parent take not found" }, { status: 404 });
+      }
+
+      if (parent.parent_take_id) {
+        return NextResponse.json(
+          { error: "Replies can only attach to a root take (no branching)." },
+          { status: 400 }
+        );
+      }
+
+      // Optional safety: force reply to same topic/question as parent (prevents mismatch)
+      if (parent.topic_id !== topicId || parent.question_id !== questionId) {
+        return NextResponse.json(
+          { error: "Reply must match the parent take's topic/question." },
+          { status: 400 }
+        );
+      }
+    }
+
+    // 6) Create Mux Direct Upload (signed upload URL)
     const origin = req.headers.get("origin") || "*";
 
     const muxRes = await fetch("https://api.mux.com/video/v1/uploads", {
@@ -106,9 +128,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         cors_origin: origin,
-        new_asset_settings: {
-          playback_policies: ["public"],
-        },
+        new_asset_settings: { playback_policies: ["public"] },
       }),
     });
 
@@ -131,8 +151,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 6) Create the takes row
-    // We store the uploadId temporarily in video_ref until webhook updates with asset/playback_id
+    // 7) Create the takes row
     const { data: takeRow, error: takeErr } = await supabaseAdmin
       .from("takes")
       .insert({
