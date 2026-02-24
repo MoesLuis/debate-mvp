@@ -1,14 +1,24 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type FollowedTopic = { id: number; name: string };
 type Question = { id: number; question: string };
 
+type ParentTakeMeta = {
+  topic_id: number;
+  question_id: number;
+};
+
 export default function RecordTakePage() {
   const router = useRouter();
+  const params = useSearchParams();
+
+  // ✅ Reply / thread params
+  const parentTakeIdParam = params.get("parentTakeId");
+  const isReply = !!parentTakeIdParam;
 
   // Recording state
   const streamRef = useRef<MediaStream | null>(null);
@@ -25,28 +35,113 @@ export default function RecordTakePage() {
   const [questionId, setQuestionId] = useState<number | null>(null);
 
   // Metadata
-  const [stance, setStance] = useState<"neutral" | "pro" | "against">("neutral");
+  const [stance, setStance] = useState<"neutral" | "pro" | "against">(isReply ? "pro" : "neutral");
   const [isChallengeable, setIsChallengeable] = useState(false);
 
   // Upload state
   const [status, setStatus] = useState<string>("");
   const [busy, setBusy] = useState(false);
 
+  const selectorsLocked = isReply; // for now: replies inherit topic/question from parent
+
   useEffect(() => {
-    loadFollowedTopics();
+    // If this is a reply, force: not challengeable
+    if (isReply) setIsChallengeable(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReply, parentTakeIdParam]);
+
+  useEffect(() => {
+    if (isReply) {
+      loadParentTakeMeta();
+    } else {
+      loadFollowedTopics();
+    }
     return () => cleanupMedia();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Only load questions on topic change in non-reply mode
   useEffect(() => {
+    if (selectorsLocked) return;
     if (topicId) loadQuestions(topicId);
     else setQuestions([]);
     setQuestionId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topicId]);
+  }, [topicId, selectorsLocked]);
 
-  const canRecord = useMemo(() => !!topicId && !!questionId && !busy, [topicId, questionId, busy]);
-  const canUpload = useMemo(() => !!videoBlob && !!topicId && !!questionId && !busy, [videoBlob, topicId, questionId, busy]);
+  const canRecord = useMemo(() => {
+    if (!topicId || !questionId || busy) return false;
+    if (isReply && stance === "neutral") return false; // replies must be pro/against
+    return true;
+  }, [topicId, questionId, busy, isReply, stance]);
+
+  const canUpload = useMemo(() => {
+    if (!videoBlob || !topicId || !questionId || busy) return false;
+    if (isReply && stance === "neutral") return false;
+    return true;
+  }, [videoBlob, topicId, questionId, busy, isReply, stance]);
+
+  async function loadParentTakeMeta() {
+    setStatus("Loading parent take…");
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      setStatus("Please log in to record a reply.");
+      return;
+    }
+
+    const parentId = parentTakeIdParam!;
+    const { data: parent, error: pErr } = await supabase
+      .from("takes")
+      .select("topic_id, question_id")
+      .eq("id", parentId)
+      .maybeSingle();
+
+    if (pErr || !parent) {
+      console.error(pErr);
+      setStatus("Could not load the take you are replying to.");
+      return;
+    }
+
+    const meta = parent as unknown as ParentTakeMeta;
+
+    // lock selectors to parent topic/question
+    setTopicId(Number(meta.topic_id));
+    setQuestionId(Number(meta.question_id));
+
+    // load topic name
+    const { data: topicRow } = await supabase
+      .from("topics")
+      .select("id, name")
+      .eq("id", Number(meta.topic_id))
+      .maybeSingle();
+
+    // load question text
+    const { data: qRow } = await supabase
+      .from("questions")
+      .select("id, question")
+      .eq("id", Number(meta.question_id))
+      .maybeSingle();
+
+    if (topicRow?.id && topicRow?.name) {
+      setTopics([{ id: Number(topicRow.id), name: String(topicRow.name) }]);
+    } else {
+      setTopics([{ id: Number(meta.topic_id), name: `Topic ${meta.topic_id}` }]);
+    }
+
+    if (qRow?.id && qRow?.question) {
+      setQuestions([{ id: Number(qRow.id), question: String(qRow.question) }]);
+    } else {
+      setQuestions([{ id: Number(meta.question_id), question: `Question ${meta.question_id}` }]);
+    }
+
+    // replies default to pro (user can switch to against)
+    setStance("pro");
+    setStatus("");
+  }
 
   async function loadFollowedTopics() {
     setStatus("Loading your topics…");
@@ -157,7 +252,9 @@ export default function RecordTakePage() {
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "video/webm" });
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || "video/webm",
+        });
         setVideoBlob(blob);
         const url = URL.createObjectURL(blob);
         setPreviewUrl(url);
@@ -190,6 +287,11 @@ export default function RecordTakePage() {
   async function uploadToMux() {
     if (!canUpload || !topicId || !questionId || !videoBlob) return;
 
+    if (isReply && stance === "neutral") {
+      setStatus("Choose In favor or Against for a reply.");
+      return;
+    }
+
     setBusy(true);
     setStatus("Creating upload…");
 
@@ -203,7 +305,9 @@ export default function RecordTakePage() {
       return;
     }
 
-    // 1) Ask server for signed Mux upload URL + takeId
+    // ✅ If this is a reply, enforce non-challengeable
+    const finalIsChallengeable = isReply ? false : isChallengeable;
+
     const createRes = await fetch("/api/takes/create-upload", {
       method: "POST",
       headers: {
@@ -214,8 +318,8 @@ export default function RecordTakePage() {
         topicId,
         questionId,
         stance,
-        parentTakeId: null,
-        isChallengeable,
+        parentTakeId: parentTakeIdParam || null,
+        isChallengeable: finalIsChallengeable,
       }),
     });
 
@@ -237,7 +341,6 @@ export default function RecordTakePage() {
       return;
     }
 
-    // 2) Upload blob to Mux signed URL
     setStatus("Uploading video…");
 
     const putRes = await fetch(uploadUrl, {
@@ -259,14 +362,21 @@ export default function RecordTakePage() {
     setStatus("Uploaded ✅ Processing in Mux… (this may take a moment)");
     setBusy(false);
 
-    // MVP: send back to feed
     setTimeout(() => router.push("/takes"), 900);
   }
 
   return (
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
       <div className="flex items-center justify-between gap-4">
-        <h1 className="text-xl font-semibold">Record a Take</h1>
+        <div>
+          <h1 className="text-xl font-semibold">{isReply ? "Join take" : "Record a Take"}</h1>
+          {isReply && (
+            <p className="text-sm text-zinc-700 mt-1">
+              You’re replying to a thread. Pick <strong>In favor</strong> or <strong>Against</strong>.
+            </p>
+          )}
+        </div>
+
         <button
           onClick={() => router.push("/takes")}
           className="px-3 py-2 rounded border border-zinc-400 bg-zinc-100 text-sm hover:bg-zinc-50"
@@ -282,10 +392,13 @@ export default function RecordTakePage() {
           <select
             value={topicId ?? ""}
             onChange={(e) => setTopicId(Number(e.target.value))}
-            className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm"
+            disabled={selectorsLocked}
+            className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm disabled:opacity-70"
           >
             {topics.length === 0 ? (
-              <option value="">(No topics followed — add topics in Profile)</option>
+              <option value="">
+                ({isReply ? "Loading parent topic…" : "No topics followed — add topics in Profile"})
+              </option>
             ) : (
               topics.map((t) => (
                 <option key={t.id} value={t.id}>
@@ -299,10 +412,13 @@ export default function RecordTakePage() {
           <select
             value={questionId ?? ""}
             onChange={(e) => setQuestionId(Number(e.target.value))}
-            className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm"
+            disabled={selectorsLocked}
+            className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm disabled:opacity-70"
           >
             {questions.length === 0 ? (
-              <option value="">(No questions for this topic yet)</option>
+              <option value="">
+                ({isReply ? "Loading parent question…" : "No questions for this topic yet"})
+              </option>
             ) : (
               questions.map((q) => (
                 <option key={q.id} value={q.id}>
@@ -315,15 +431,29 @@ export default function RecordTakePage() {
           <div className="mt-4 grid grid-cols-2 gap-3">
             <div>
               <label className="block text-sm font-medium">Stance</label>
-              <select
-                value={stance}
-                onChange={(e) => setStance(e.target.value as any)}
-                className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm"
-              >
-                <option value="neutral">Neutral</option>
-                <option value="pro">In favor</option>
-                <option value="against">Against</option>
-              </select>
+
+              {isReply ? (
+                <select
+                  value={stance}
+                  onChange={(e) => setStance(e.target.value as "pro" | "against")}
+                  className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm"
+                >
+                  <option value="pro">In favor</option>
+                  <option value="against">Against</option>
+                </select>
+              ) : (
+                <select
+                  value={stance}
+                  onChange={(e) =>
+                    setStance(e.target.value as "neutral" | "pro" | "against")
+                  }
+                  className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm"
+                >
+                  <option value="neutral">Neutral</option>
+                  <option value="pro">In favor</option>
+                  <option value="against">Against</option>
+                </select>
+              )}
             </div>
 
             <div className="flex items-end">
@@ -331,6 +461,7 @@ export default function RecordTakePage() {
                 <input
                   type="checkbox"
                   checked={isChallengeable}
+                  disabled={isReply}
                   onChange={(e) => setIsChallengeable(e.target.checked)}
                 />
                 Challengeable
@@ -338,9 +469,15 @@ export default function RecordTakePage() {
             </div>
           </div>
 
-          <div className="mt-4 text-xs text-zinc-600">
-            Tip: If you have no topics here, go to <strong>Profile</strong> and select topics first.
-          </div>
+          {isReply ? (
+            <div className="mt-4 text-xs text-zinc-700">
+              This is a reply, so <strong>Challengeable is off</strong>.
+            </div>
+          ) : (
+            <div className="mt-4 text-xs text-zinc-600">
+              Tip: If you have no topics here, go to <strong>Profile</strong> and select topics first.
+            </div>
+          )}
         </div>
 
         {/* Right: recorder */}
@@ -399,6 +536,12 @@ export default function RecordTakePage() {
           </div>
         </div>
       </div>
+
+      {isReply && (
+        <div className="mt-4 text-xs text-zinc-700">
+          Parent take id: <span className="font-mono">{parentTakeIdParam}</span>
+        </div>
+      )}
     </div>
   );
 }
