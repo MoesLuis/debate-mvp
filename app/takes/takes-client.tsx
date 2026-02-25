@@ -32,17 +32,13 @@ function muxHlsUrl(playbackId: string) {
   return `https://stream.mux.com/${playbackId}.m3u8`;
 }
 
-/**
- * ✅ Explicit thumbnail per take (Mux Image API)
- * You can tweak:
- * - time=0 (or 1) to avoid blank first frame
- * - width for performance
- * - format jpg/webp
- */
-function muxPosterUrl(playbackId: string) {
-  const t = 0; // try 1 if you ever get a black first frame
-  const w = 720;
-  return `https://image.mux.com/${playbackId}/thumbnail.jpg?time=${t}&width=${w}&fit_mode=preserve`;
+// ✅ Explicit per-take thumbnail (unique cache-bust per take id)
+function muxThumbUrl(playbackId: string, takeId: string) {
+  // time=0 is fine; you can change to time=1 or time=2 if you prefer a less-black first frame
+  // cb=takeId ensures each take has its own cached thumbnail URL
+  return `https://image.mux.com/${playbackId}/thumbnail.png?time=0&width=960&fit_mode=pad&cb=${encodeURIComponent(
+    takeId
+  )}`;
 }
 
 async function ensureHlsJsLoaded() {
@@ -105,7 +101,7 @@ export default function TakesClient() {
   const [feedError, setFeedError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Thread browsing
+  // Thread browsing (filtered stance replies under a root)
   const [viewMode, setViewMode] = useState<ViewMode>({ kind: "feed" });
   const [threadTakes, setThreadTakes] = useState<TakeRow[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
@@ -129,10 +125,7 @@ export default function TakesClient() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsInstanceRef = useRef<any>(null);
 
-  /**
-   * ✅ Keep a deterministic "loading" mask up until playback actually starts.
-   * This plus poster prevents “wrong thumbnail flash”.
-   */
+  // Mask while new stream loads
   const [videoLoading, setVideoLoading] = useState(true);
 
   const showingThread = viewMode.kind === "thread";
@@ -152,11 +145,12 @@ export default function TakesClient() {
     return activeTake.parent_take_id ?? activeTake.id;
   }, [activeTake]);
 
-  // ✅ Explicit poster per active take
+  const activeTopicName = activeTake?.topics?.[0]?.name ?? "Topic";
+
   const activePoster = useMemo(() => {
-    if (!activeTake?.playback_id) return undefined;
-    return muxPosterUrl(activeTake.playback_id);
-  }, [activeTake?.playback_id]);
+    if (!activeTake?.playback_id) return "";
+    return muxThumbUrl(activeTake.playback_id, activeTake.id);
+  }, [activeTake?.playback_id, activeTake?.id]);
 
   /* ---------------- USER ---------------- */
   useEffect(() => {
@@ -381,6 +375,9 @@ export default function TakesClient() {
     setLoadingThread(true);
     setThreadIndex(0);
 
+    // Two stances rule:
+    // - Against: stance === "against"
+    // - In favor: anything not against (including null)
     let query = supabase
       .from("takes")
       .select(
@@ -477,10 +474,8 @@ export default function TakesClient() {
 
   /* ---------------- VIDEO ATTACH ---------------- */
   useEffect(() => {
-    // ✅ mask immediately on take change
     setVideoLoading(true);
 
-    // ✅ kill old HLS instance hard
     if (hlsInstanceRef.current) {
       try {
         hlsInstanceRef.current.destroy();
@@ -499,14 +494,17 @@ export default function TakesClient() {
       const v = videoRef.current;
       if (!v) return;
 
+      // ✅ Force the correct poster immediately (per-take)
+      try {
+        v.poster = muxThumbUrl(activeTake.playback_id!, activeTake.id);
+      } catch {}
+
       // hard reset the element
       try {
         v.pause();
       } catch {}
       v.removeAttribute("src");
       v.load();
-
-      // NOTE: poster is controlled by React prop (activePoster)
 
       if (canPlayHlsNatively) {
         v.src = src;
@@ -532,6 +530,11 @@ export default function TakesClient() {
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           v.play().catch(() => {});
+        });
+
+        hls.on(Hls.Events.ERROR, () => {
+          // If HLS errors, at least stop masking so user sees something
+          setVideoLoading(false);
         });
       } else {
         v.src = src;
@@ -578,8 +581,6 @@ export default function TakesClient() {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showingThread, showingOriginal, takes.length, threadTakes.length]);
-
-  const activeTopicName = activeTake?.topics?.[0]?.name ?? "Topic";
 
   /* ---------------- REACTIONS ---------------- */
   useEffect(() => {
@@ -761,7 +762,9 @@ export default function TakesClient() {
           <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
             <div className="text-center">
               <div className="text-2xl font-semibold mb-2">No takes yet</div>
-              <p className="text-sm text-zinc-600">Record the first take for one of your topics.</p>
+              <p className="text-sm text-zinc-600">
+                Record the first take for one of your topics.
+              </p>
               <button
                 onClick={() => router.push("/takes/record")}
                 className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90"
@@ -775,7 +778,7 @@ export default function TakesClient() {
             <video
               key={activeTake?.id}
               ref={videoRef}
-              poster={activePoster}
+              poster={activePoster || undefined}
               preload="metadata"
               className={`w-full h-full object-contain bg-black transition-opacity ${
                 videoLoading ? "opacity-0" : "opacity-100"
@@ -783,11 +786,11 @@ export default function TakesClient() {
               playsInline
               controls
               onLoadStart={() => setVideoLoading(true)}
-              onPlaying={() => setVideoLoading(false)}
+              onLoadedData={() => setVideoLoading(false)}
+              onCanPlay={() => setVideoLoading(false)}
               onError={() => setVideoLoading(false)}
             />
 
-            {/* ✅ Loading mask */}
             {videoLoading && (
               <div className="absolute inset-0 flex items-center justify-center bg-black">
                 <div className="text-white/90 text-sm">Loading video…</div>
@@ -827,7 +830,7 @@ export default function TakesClient() {
               )}
             </div>
 
-            {/* Thread overlays */}
+            {/* Thread empty / loading / error */}
             {showingThread && !loadingThread && threadTakes.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">

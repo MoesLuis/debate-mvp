@@ -8,7 +8,7 @@ type CreateUploadBody = {
   topicId: number;
   questionId: number;
   stance?: "neutral" | "pro" | "against";
-  parentTakeId?: string | null; // can be root OR a response; server will normalize to root
+  parentTakeId?: string | null;
   isChallengeable?: boolean;
 };
 
@@ -26,7 +26,6 @@ function muxAuthHeader() {
 
 export async function POST(req: NextRequest) {
   try {
-    // 1) Require Bearer token (Supabase session token)
     const authHeader = req.headers.get("authorization") || "";
     const token = authHeader.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length).trim()
@@ -36,7 +35,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // 2) Authed Supabase client to identify user
     const supabaseAuthed = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -52,16 +50,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // 3) Read body
     const body = (await req.json()) as CreateUploadBody;
 
     const requestedTopicId = Number(body?.topicId);
     const requestedQuestionId = Number(body?.questionId);
 
     const stance =
-      body?.stance === "pro" || body?.stance === "against"
-        ? body.stance
-        : "neutral";
+      body?.stance === "pro" || body?.stance === "against" ? body.stance : "neutral";
 
     const parentTakeIdRaw = body?.parentTakeId ? String(body.parentTakeId) : null;
     const isChallengeable = !!body?.isChallengeable;
@@ -73,18 +68,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ---------------------------------------------------------
-    // 4) Normalize replies to ROOT:
-    //    - If parentTakeId is provided, it may be root or response.
-    //    - We compute rootTakeId = parent.parent_take_id ?? parent.id
-    //    - We force topic/question to match the ROOT take.
-    // ---------------------------------------------------------
+    // Normalize replies to ROOT + force topic/question
     let finalParentTakeId: string | null = null;
     let finalTopicId = requestedTopicId;
     let finalQuestionId = requestedQuestionId;
 
     if (parentTakeIdRaw) {
-      // Fetch the referenced take (could be root or response)
       const { data: parent, error: pErr } = await supabaseAdmin
         .from("takes")
         .select("id, parent_take_id, topic_id, question_id")
@@ -97,7 +86,6 @@ export async function POST(req: NextRequest) {
 
       const rootTakeId = parent.parent_take_id ?? parent.id;
 
-      // Fetch the root take (must exist)
       const { data: root, error: rErr } = await supabaseAdmin
         .from("takes")
         .select("id, parent_take_id, topic_id, question_id")
@@ -108,7 +96,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Root take not found" }, { status: 404 });
       }
 
-      // Root must actually be root
       if (root.parent_take_id) {
         return NextResponse.json(
           { error: "Invalid root take (root take cannot have a parent)." },
@@ -116,14 +103,10 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Force reply to attach to ROOT (no branching)
       finalParentTakeId = root.id;
-
-      // Force topic/question to match ROOT (prevents mismatch issues)
       finalTopicId = root.topic_id;
       finalQuestionId = root.question_id;
 
-      // Optional: if client sent different values, fail loudly (helps debugging)
       if (requestedTopicId !== finalTopicId || requestedQuestionId !== finalQuestionId) {
         return NextResponse.json(
           { error: "Reply must match the root take's topic/question." },
@@ -132,7 +115,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 5) Ensure question belongs to topic (using FINAL ids)
+    // Ensure question belongs to topic
     const { data: qRow, error: qErr } = await supabaseAdmin
       .from("questions")
       .select("id, topic_id, is_active")
@@ -152,8 +135,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Question is not active" }, { status: 400 });
     }
 
-    // 6) Create Mux Direct Upload (signed upload URL)
-    const origin = req.headers.get("origin") || "*";
+    // ✅ Create Mux Direct Upload
+    const originHeader = req.headers.get("origin");
+    const corsOrigin =
+      originHeader ||
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      process.env.NEXT_PUBLIC_APP_URL ||
+      "*";
 
     const muxRes = await fetch("https://api.mux.com/video/v1/uploads", {
       method: "POST",
@@ -162,8 +150,8 @@ export async function POST(req: NextRequest) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        cors_origin: origin,
-        new_asset_settings: { playback_policies: ["public"] },
+        cors_origin: corsOrigin,
+        new_asset_settings: { playback_policy: ["public"] },
       }),
     });
 
@@ -171,7 +159,16 @@ export async function POST(req: NextRequest) {
 
     if (!muxRes.ok) {
       return NextResponse.json(
-        { error: "Mux error creating upload", details: muxJson },
+        {
+          error: "Mux error creating upload",
+          muxStatus: muxRes.status,
+          muxResponse: muxJson,
+          debug: {
+            corsOrigin,
+            hasTokenId: !!process.env.MUX_TOKEN_ID,
+            hasTokenSecret: !!process.env.MUX_TOKEN_SECRET,
+          },
+        },
         { status: 502 }
       );
     }
@@ -181,19 +178,18 @@ export async function POST(req: NextRequest) {
 
     if (!uploadId || !uploadUrl) {
       return NextResponse.json(
-        { error: "Mux did not return upload url/id", details: muxJson },
+        { error: "Mux did not return upload url/id", muxResponse: muxJson },
         { status: 502 }
       );
     }
 
-    // 7) Create the takes row
     const { data: takeRow, error: takeErr } = await supabaseAdmin
       .from("takes")
       .insert({
         user_id: user.id,
         topic_id: finalTopicId,
         question_id: finalQuestionId,
-        parent_take_id: finalParentTakeId, // ALWAYS root when replying
+        parent_take_id: finalParentTakeId,
         stance,
         is_challengeable: isChallengeable,
 
