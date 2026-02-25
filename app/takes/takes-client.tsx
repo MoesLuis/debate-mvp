@@ -32,6 +32,19 @@ function muxHlsUrl(playbackId: string) {
   return `https://stream.mux.com/${playbackId}.m3u8`;
 }
 
+/**
+ * ✅ Explicit thumbnail per take (Mux Image API)
+ * You can tweak:
+ * - time=0 (or 1) to avoid blank first frame
+ * - width for performance
+ * - format jpg/webp
+ */
+function muxPosterUrl(playbackId: string) {
+  const t = 0; // try 1 if you ever get a black first frame
+  const w = 720;
+  return `https://image.mux.com/${playbackId}/thumbnail.jpg?time=${t}&width=${w}&fit_mode=preserve`;
+}
+
 async function ensureHlsJsLoaded() {
   if (typeof window === "undefined") return false;
   if (window.Hls) return true;
@@ -65,12 +78,12 @@ type ViewMode =
       kind: "thread";
       rootTakeId: string;
       stance: "against" | "for";
-      entryTakeId: string; // the take user was watching when they entered thread browsing
+      entryTakeId: string;
     }
   | {
       kind: "original";
       rootTakeId: string;
-      returnTakeId: string; // the response take user was watching
+      returnTakeId: string;
     };
 
 export default function TakesClient() {
@@ -92,7 +105,7 @@ export default function TakesClient() {
   const [feedError, setFeedError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Thread browsing (filtered stance replies under a root)
+  // Thread browsing
   const [viewMode, setViewMode] = useState<ViewMode>({ kind: "feed" });
   const [threadTakes, setThreadTakes] = useState<TakeRow[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
@@ -116,7 +129,10 @@ export default function TakesClient() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsInstanceRef = useRef<any>(null);
 
-  // ✅ Prevent “previous video frame flashes” by masking while new stream loads
+  /**
+   * ✅ Keep a deterministic "loading" mask up until playback actually starts.
+   * This plus poster prevents “wrong thumbnail flash”.
+   */
   const [videoLoading, setVideoLoading] = useState(true);
 
   const showingThread = viewMode.kind === "thread";
@@ -135,6 +151,12 @@ export default function TakesClient() {
     if (!activeTake) return null;
     return activeTake.parent_take_id ?? activeTake.id;
   }, [activeTake]);
+
+  // ✅ Explicit poster per active take
+  const activePoster = useMemo(() => {
+    if (!activeTake?.playback_id) return undefined;
+    return muxPosterUrl(activeTake.playback_id);
+  }, [activeTake?.playback_id]);
 
   /* ---------------- USER ---------------- */
   useEffect(() => {
@@ -226,7 +248,6 @@ export default function TakesClient() {
     let channel: any;
 
     async function init() {
-      // Reset any special mode when switching tabs (keeps it sane)
       setViewMode({ kind: "feed" });
       setThreadTakes([]);
       setThreadIndex(0);
@@ -234,7 +255,6 @@ export default function TakesClient() {
 
       await loadFeed();
 
-      // Only subscribe to topic changes when in following tab
       if (isFollowing) {
         channel = supabase
           .channel("takes-following-user-topics")
@@ -277,7 +297,6 @@ export default function TakesClient() {
     }
 
     if (!isFollowing) {
-      // EXPLORE FEED: all takes (root + response)
       const { data, error } = await supabase
         .from("takes")
         .select(
@@ -305,7 +324,6 @@ export default function TakesClient() {
       return;
     }
 
-    // FOLLOWING FEED: topics you follow, but includes root + response
     const { data: followedData, error: fErr } = await supabase
       .from("user_topics")
       .select("topic_id")
@@ -363,9 +381,6 @@ export default function TakesClient() {
     setLoadingThread(true);
     setThreadIndex(0);
 
-    // ✅ Two stances rule:
-    // - "Against" is strictly stance === "against"
-    // - "In favor" is ANYTHING that is NOT "against" (including null / neutral / pro / etc.)
     let query = supabase
       .from("takes")
       .select(
@@ -462,9 +477,10 @@ export default function TakesClient() {
 
   /* ---------------- VIDEO ATTACH ---------------- */
   useEffect(() => {
-    // ✅ whenever the active take changes, mask the player until it can play
+    // ✅ mask immediately on take change
     setVideoLoading(true);
 
+    // ✅ kill old HLS instance hard
     if (hlsInstanceRef.current) {
       try {
         hlsInstanceRef.current.destroy();
@@ -490,6 +506,8 @@ export default function TakesClient() {
       v.removeAttribute("src");
       v.load();
 
+      // NOTE: poster is controlled by React prop (activePoster)
+
       if (canPlayHlsNatively) {
         v.src = src;
         v.load();
@@ -508,6 +526,7 @@ export default function TakesClient() {
       if (Hls.isSupported()) {
         const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
         hlsInstanceRef.current = hls;
+
         hls.loadSource(src);
         hls.attachMedia(v);
 
@@ -638,7 +657,6 @@ export default function TakesClient() {
   async function handleAgainst() {
     if (!activeTake?.id || !activeRootId) return;
 
-    // If already browsing "Against" thread, advance
     if (viewMode.kind === "thread" && viewMode.stance === "against") {
       setThreadIndex((i) => Math.min(i + 1, Math.max(0, threadTakes.length - 1)));
       return;
@@ -650,7 +668,6 @@ export default function TakesClient() {
   async function handleInFavor() {
     if (!activeTake?.id || !activeRootId) return;
 
-    // If already browsing "In favor" thread, advance
     if (viewMode.kind === "thread" && viewMode.stance === "for") {
       setThreadIndex((i) => Math.min(i + 1, Math.max(0, threadTakes.length - 1)));
       return;
@@ -716,7 +733,7 @@ export default function TakesClient() {
         </div>
       )}
 
-      {/* FEED AREA (works for Following + Explore) */}
+      {/* FEED AREA */}
       <div className="mt-6 relative">
         {loadingFeed ? (
           <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
@@ -744,9 +761,7 @@ export default function TakesClient() {
           <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
             <div className="text-center">
               <div className="text-2xl font-semibold mb-2">No takes yet</div>
-              <p className="text-sm text-zinc-600">
-                Record the first take for one of your topics.
-              </p>
+              <p className="text-sm text-zinc-600">Record the first take for one of your topics.</p>
               <button
                 onClick={() => router.push("/takes/record")}
                 className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90"
@@ -757,20 +772,22 @@ export default function TakesClient() {
           </div>
         ) : (
           <div className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative">
-            {/* ✅ Remount video per take to prevent old frame flash */}
             <video
               key={activeTake?.id}
               ref={videoRef}
+              poster={activePoster}
+              preload="metadata"
               className={`w-full h-full object-contain bg-black transition-opacity ${
                 videoLoading ? "opacity-0" : "opacity-100"
               }`}
               playsInline
               controls
-              onLoadedData={() => setVideoLoading(false)}
-              onCanPlay={() => setVideoLoading(false)}
+              onLoadStart={() => setVideoLoading(true)}
+              onPlaying={() => setVideoLoading(false)}
+              onError={() => setVideoLoading(false)}
             />
 
-            {/* ✅ Loading mask (prevents root thumbnail flash) */}
+            {/* ✅ Loading mask */}
             {videoLoading && (
               <div className="absolute inset-0 flex items-center justify-center bg-black">
                 <div className="text-white/90 text-sm">Loading video…</div>
@@ -781,9 +798,7 @@ export default function TakesClient() {
             <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
               <div className="font-medium">
                 {activeTopicName}
-                {showingThread ? (
-                  <span className="ml-2 text-xs opacity-80">(thread)</span>
-                ) : null}
+                {showingThread ? <span className="ml-2 text-xs opacity-80">(thread)</span> : null}
                 {showingOriginal ? (
                   <span className="ml-2 text-xs opacity-80">(original)</span>
                 ) : null}
@@ -793,7 +808,6 @@ export default function TakesClient() {
                 {visibleIndex + 1} / {visibleList.length}
               </div>
 
-              {/* Show original / back to thread */}
               {showShowOriginalButton && (
                 <button
                   onClick={showOriginal}
@@ -813,7 +827,7 @@ export default function TakesClient() {
               )}
             </div>
 
-            {/* Thread empty state overlay */}
+            {/* Thread overlays */}
             {showingThread && !loadingThread && threadTakes.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
@@ -822,7 +836,6 @@ export default function TakesClient() {
               </div>
             )}
 
-            {/* Thread loading/error */}
             {showingThread && loadingThread && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
@@ -830,6 +843,7 @@ export default function TakesClient() {
                 </div>
               </div>
             )}
+
             {showingThread && threadError && (
               <div className="absolute inset-0 flex items-center justify-center">
                 <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm text-center">
@@ -850,7 +864,6 @@ export default function TakesClient() {
               </div>
             )}
 
-            {/* Center-left Back button while browsing thread (returns to entry take) */}
             {showingThread && (
               <button
                 onClick={backToEntryInThread}
@@ -861,7 +874,6 @@ export default function TakesClient() {
               </button>
             )}
 
-            {/* Prev/Next (disabled in original mode) */}
             {!showingOriginal && (
               <div className="absolute left-4 bottom-4 flex gap-2">
                 <button
@@ -884,7 +896,7 @@ export default function TakesClient() {
         )}
       </div>
 
-      {/* EXPLORE: keep topic discovery grid under the feed */}
+      {/* EXPLORE: topic discovery grid */}
       {!isFollowing && (
         <div className="mt-6">
           <h2 className="text-lg font-semibold mb-4">Discover Topics</h2>
