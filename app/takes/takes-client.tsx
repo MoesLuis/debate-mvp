@@ -116,6 +116,9 @@ export default function TakesClient() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsInstanceRef = useRef<any>(null);
 
+  // ✅ Prevent “previous video frame flashes” by masking while new stream loads
+  const [videoLoading, setVideoLoading] = useState(true);
+
   const showingThread = viewMode.kind === "thread";
   const showingOriginal = viewMode.kind === "original";
 
@@ -360,9 +363,10 @@ export default function TakesClient() {
     setLoadingThread(true);
     setThreadIndex(0);
 
-    const forStances = ["pro", "for", "in_favor"];
-
-    const query = supabase
+    // ✅ Two stances rule:
+    // - "Against" is strictly stance === "against"
+    // - "In favor" is ANYTHING that is NOT "against" (including null / neutral / pro / etc.)
+    let query = supabase
       .from("takes")
       .select(
         "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
@@ -375,7 +379,7 @@ export default function TakesClient() {
     const { data, error } =
       stance === "against"
         ? await query.eq("stance", "against")
-        : await query.in("stance", forStances);
+        : await query.or("stance.is.null,stance.neq.against");
 
     if (error) {
       setThreadError("Could not load replies.");
@@ -398,18 +402,13 @@ export default function TakesClient() {
     if (viewMode.kind !== "thread") return;
     const entryId = viewMode.entryTakeId;
 
-    // Return to feed at the exact take you entered from
     const idx = takes.findIndex((t) => t.id === entryId);
     setViewMode({ kind: "feed" });
     setThreadTakes([]);
     setThreadIndex(0);
 
-    if (idx >= 0) {
-      setActiveIndex(idx);
-    } else {
-      // If not found (due to different tab/filter), fallback to feed start
-      setActiveIndex(0);
-    }
+    if (idx >= 0) setActiveIndex(idx);
+    else setActiveIndex(0);
   }
 
   /* ---------------- ORIGINAL (ROOT) LOADER ---------------- */
@@ -457,16 +456,15 @@ export default function TakesClient() {
     setOriginalTake(null);
 
     const idx = takes.findIndex((t) => t.id === returnId);
-    if (idx >= 0) {
-      setActiveIndex(idx);
-    } else {
-      setActiveIndex(0);
-    }
+    if (idx >= 0) setActiveIndex(idx);
+    else setActiveIndex(0);
   }
 
   /* ---------------- VIDEO ATTACH ---------------- */
   useEffect(() => {
-    // clean old instance
+    // ✅ whenever the active take changes, mask the player until it can play
+    setVideoLoading(true);
+
     if (hlsInstanceRef.current) {
       try {
         hlsInstanceRef.current.destroy();
@@ -485,6 +483,7 @@ export default function TakesClient() {
       const v = videoRef.current;
       if (!v) return;
 
+      // hard reset the element
       try {
         v.pause();
       } catch {}
@@ -645,7 +644,6 @@ export default function TakesClient() {
       return;
     }
 
-    // Enter thread browsing from current take (root or response)
     await openThread(activeRootId, "against", activeTake.id);
   }
 
@@ -759,12 +757,25 @@ export default function TakesClient() {
           </div>
         ) : (
           <div className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative">
+            {/* ✅ Remount video per take to prevent old frame flash */}
             <video
+              key={activeTake?.id}
               ref={videoRef}
-              className="w-full h-full object-contain bg-black"
+              className={`w-full h-full object-contain bg-black transition-opacity ${
+                videoLoading ? "opacity-0" : "opacity-100"
+              }`}
               playsInline
               controls
+              onLoadedData={() => setVideoLoading(false)}
+              onCanPlay={() => setVideoLoading(false)}
             />
+
+            {/* ✅ Loading mask (prevents root thumbnail flash) */}
+            {videoLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black">
+                <div className="text-white/90 text-sm">Loading video…</div>
+              </div>
+            )}
 
             {/* Top-left overlay */}
             <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
@@ -909,9 +920,7 @@ export default function TakesClient() {
       <div className="fixed right-6 top-1/2 -translate-y-1/2 flex flex-col gap-3">
         <button
           onClick={() => {
-            // If in original view, return to thread/video
             if (showingOriginal) backToThreadFromOriginal();
-            // If in thread browse, return to entry
             if (showingThread) backToEntryInThread();
           }}
           className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs"
@@ -927,7 +936,6 @@ export default function TakesClient() {
           Profile
         </button>
 
-        {/* Against: cycles through against replies for current root */}
         <button
           onClick={handleAgainst}
           disabled={!activeTake?.id || !activeRootId}
@@ -949,7 +957,6 @@ export default function TakesClient() {
           <div className="text-[10px] opacity-80 mt-1">{likeCount}</div>
         </button>
 
-        {/* Join take: always available; replies attach to root */}
         <button
           onClick={openJoinPicker}
           disabled={!activeRootId}
@@ -960,7 +967,6 @@ export default function TakesClient() {
           <div className="text-[10px] opacity-80 mt-1">take</div>
         </button>
 
-        {/* Live debate: allowed for any take if challengeable */}
         {activeTake?.is_challengeable ? (
           <button
             onClick={handleLiveDebate}
@@ -974,7 +980,6 @@ export default function TakesClient() {
           <div className="w-14 h-14 rounded border border-transparent bg-transparent" />
         )}
 
-        {/* In favor: cycles through in-favor replies for current root */}
         <button
           onClick={handleInFavor}
           disabled={!activeTake?.id || !activeRootId}
