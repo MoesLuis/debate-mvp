@@ -65,12 +65,12 @@ type ViewMode =
       kind: "thread";
       rootTakeId: string;
       stance: "against" | "for";
-      entryTakeId: string; // the take user was watching when they entered thread browsing
+      entryTakeId: string;
     }
   | {
       kind: "original";
       rootTakeId: string;
-      returnTakeId: string; // the response take user was watching
+      returnTakeId: string;
     };
 
 export default function TakesClient() {
@@ -92,7 +92,7 @@ export default function TakesClient() {
   const [feedError, setFeedError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Thread browsing (filtered stance replies under a root)
+  // Thread browsing
   const [viewMode, setViewMode] = useState<ViewMode>({ kind: "feed" });
   const [threadTakes, setThreadTakes] = useState<TakeRow[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
@@ -115,9 +115,6 @@ export default function TakesClient() {
   // Video playback refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsInstanceRef = useRef<any>(null);
-
-  // ✅ Prevent “previous video frame flashes” by masking while new stream loads
-  const [videoLoading, setVideoLoading] = useState(true);
 
   const showingThread = viewMode.kind === "thread";
   const showingOriginal = viewMode.kind === "original";
@@ -226,7 +223,6 @@ export default function TakesClient() {
     let channel: any;
 
     async function init() {
-      // Reset any special mode when switching tabs (keeps it sane)
       setViewMode({ kind: "feed" });
       setThreadTakes([]);
       setThreadIndex(0);
@@ -234,7 +230,6 @@ export default function TakesClient() {
 
       await loadFeed();
 
-      // Only subscribe to topic changes when in following tab
       if (isFollowing) {
         channel = supabase
           .channel("takes-following-user-topics")
@@ -277,7 +272,6 @@ export default function TakesClient() {
     }
 
     if (!isFollowing) {
-      // EXPLORE FEED: all takes (root + response)
       const { data, error } = await supabase
         .from("takes")
         .select(
@@ -305,7 +299,6 @@ export default function TakesClient() {
       return;
     }
 
-    // FOLLOWING FEED: topics you follow, but includes root + response
     const { data: followedData, error: fErr } = await supabase
       .from("user_topics")
       .select("topic_id")
@@ -363,10 +356,9 @@ export default function TakesClient() {
     setLoadingThread(true);
     setThreadIndex(0);
 
-    // ✅ Two stances rule:
-    // - "Against" is strictly stance === "against"
-    // - "In favor" is ANYTHING that is NOT "against" (including null / neutral / pro / etc.)
-    let query = supabase
+    const forStances = ["pro", "for", "in_favor"];
+
+    const query = supabase
       .from("takes")
       .select(
         "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
@@ -379,7 +371,7 @@ export default function TakesClient() {
     const { data, error } =
       stance === "against"
         ? await query.eq("stance", "against")
-        : await query.or("stance.is.null,stance.neq.against");
+        : await query.in("stance", forStances);
 
     if (error) {
       setThreadError("Could not load replies.");
@@ -462,9 +454,7 @@ export default function TakesClient() {
 
   /* ---------------- VIDEO ATTACH ---------------- */
   useEffect(() => {
-    // ✅ whenever the active take changes, mask the player until it can play
-    setVideoLoading(true);
-
+    // destroy old HLS instance
     if (hlsInstanceRef.current) {
       try {
         hlsInstanceRef.current.destroy();
@@ -473,7 +463,22 @@ export default function TakesClient() {
     }
 
     const videoEl = videoRef.current;
-    if (!activeTake || !videoEl || !activeTake.playback_id) return;
+
+    // If no active take or no playback yet, CLEAR the element so it can't show a previous frame.
+    if (!videoEl || !activeTake?.playback_id) {
+      if (videoEl) {
+        try {
+          videoEl.pause();
+        } catch {}
+        try {
+          videoEl.removeAttribute("src");
+          // also reset poster just in case
+          (videoEl as any).poster = "";
+          videoEl.load();
+        } catch {}
+      }
+      return;
+    }
 
     const src = muxHlsUrl(activeTake.playback_id);
     const canPlayHlsNatively =
@@ -483,12 +488,15 @@ export default function TakesClient() {
       const v = videoRef.current;
       if (!v) return;
 
-      // hard reset the element
+      // Hard reset so we never show the previous video's frozen frame
       try {
         v.pause();
       } catch {}
-      v.removeAttribute("src");
-      v.load();
+      try {
+        (v as any).poster = "";
+        v.removeAttribute("src");
+        v.load();
+      } catch {}
 
       if (canPlayHlsNatively) {
         v.src = src;
@@ -521,8 +529,8 @@ export default function TakesClient() {
     }
 
     attach();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTake?.id]);
+    // IMPORTANT: include playback_id so we don't miss a re-attach
+  }, [activeTake?.id, activeTake?.playback_id]);
 
   /* ---------------- NAV (feed + thread) ---------------- */
   function next() {
@@ -626,7 +634,7 @@ export default function TakesClient() {
 
         if (!error) {
           setLiked(true);
-          setLikeCount((c) => c + 1);
+          setLikeCount((c) => c + 1); // ✅ fixed
         }
       }
     } finally {
@@ -638,7 +646,6 @@ export default function TakesClient() {
   async function handleAgainst() {
     if (!activeTake?.id || !activeRootId) return;
 
-    // If already browsing "Against" thread, advance
     if (viewMode.kind === "thread" && viewMode.stance === "against") {
       setThreadIndex((i) => Math.min(i + 1, Math.max(0, threadTakes.length - 1)));
       return;
@@ -650,7 +657,6 @@ export default function TakesClient() {
   async function handleInFavor() {
     if (!activeTake?.id || !activeRootId) return;
 
-    // If already browsing "In favor" thread, advance
     if (viewMode.kind === "thread" && viewMode.stance === "for") {
       setThreadIndex((i) => Math.min(i + 1, Math.max(0, threadTakes.length - 1)));
       return;
@@ -659,7 +665,7 @@ export default function TakesClient() {
     await openThread(activeRootId, "for", activeTake.id);
   }
 
-  /* ---------------- JOIN TAKE (reply-to-root always) ---------------- */
+  /* ---------------- JOIN TAKE ---------------- */
   function openJoinPicker() {
     if (!activeRootId) return;
     setJoinRootId(activeRootId);
@@ -682,7 +688,6 @@ export default function TakesClient() {
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
       <TakesTopicsRibbon />
 
-      {/* JOIN PICKER MODAL */}
       {joinPickerOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <div className="w-full max-w-sm rounded-lg border border-zinc-300 bg-white p-4">
@@ -716,7 +721,6 @@ export default function TakesClient() {
         </div>
       )}
 
-      {/* FEED AREA (works for Following + Explore) */}
       <div className="mt-6 relative">
         {loadingFeed ? (
           <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
@@ -757,43 +761,25 @@ export default function TakesClient() {
           </div>
         ) : (
           <div className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative">
-            {/* ✅ Remount video per take to prevent old frame flash */}
             <video
-              key={activeTake?.id}
+              key={activeTake?.id ?? "video"} // ✅ forces remount to prevent old frame flash
               ref={videoRef}
-              className={`w-full h-full object-contain bg-black transition-opacity ${
-                videoLoading ? "opacity-0" : "opacity-100"
-              }`}
+              className="w-full h-full object-contain bg-black"
               playsInline
               controls
-              onLoadedData={() => setVideoLoading(false)}
-              onCanPlay={() => setVideoLoading(false)}
             />
 
-            {/* ✅ Loading mask (prevents root thumbnail flash) */}
-            {videoLoading && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black">
-                <div className="text-white/90 text-sm">Loading video…</div>
-              </div>
-            )}
-
-            {/* Top-left overlay */}
             <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
               <div className="font-medium">
                 {activeTopicName}
-                {showingThread ? (
-                  <span className="ml-2 text-xs opacity-80">(thread)</span>
-                ) : null}
-                {showingOriginal ? (
-                  <span className="ml-2 text-xs opacity-80">(original)</span>
-                ) : null}
+                {showingThread ? <span className="ml-2 text-xs opacity-80">(thread)</span> : null}
+                {showingOriginal ? <span className="ml-2 text-xs opacity-80">(original)</span> : null}
               </div>
 
               <div className="text-xs opacity-80">
                 {visibleIndex + 1} / {visibleList.length}
               </div>
 
-              {/* Show original / back to thread */}
               {showShowOriginalButton && (
                 <button
                   onClick={showOriginal}
@@ -813,7 +799,6 @@ export default function TakesClient() {
               )}
             </div>
 
-            {/* Thread empty state overlay */}
             {showingThread && !loadingThread && threadTakes.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
@@ -822,7 +807,6 @@ export default function TakesClient() {
               </div>
             )}
 
-            {/* Thread loading/error */}
             {showingThread && loadingThread && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
@@ -830,6 +814,7 @@ export default function TakesClient() {
                 </div>
               </div>
             )}
+
             {showingThread && threadError && (
               <div className="absolute inset-0 flex items-center justify-center">
                 <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm text-center">
@@ -850,7 +835,6 @@ export default function TakesClient() {
               </div>
             )}
 
-            {/* Center-left Back button while browsing thread (returns to entry take) */}
             {showingThread && (
               <button
                 onClick={backToEntryInThread}
@@ -861,7 +845,6 @@ export default function TakesClient() {
               </button>
             )}
 
-            {/* Prev/Next (disabled in original mode) */}
             {!showingOriginal && (
               <div className="absolute left-4 bottom-4 flex gap-2">
                 <button
@@ -884,7 +867,6 @@ export default function TakesClient() {
         )}
       </div>
 
-      {/* EXPLORE: keep topic discovery grid under the feed */}
       {!isFollowing && (
         <div className="mt-6">
           <h2 className="text-lg font-semibold mb-4">Discover Topics</h2>
@@ -916,7 +898,6 @@ export default function TakesClient() {
         </div>
       )}
 
-      {/* Right action rail */}
       <div className="fixed right-6 top-1/2 -translate-y-1/2 flex flex-col gap-3">
         <button
           onClick={() => {
