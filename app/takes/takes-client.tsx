@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import TakesTopicsRibbon from "@/components/TakesTopicsRibbon";
@@ -34,11 +34,19 @@ function muxHlsUrl(playbackId: string) {
 
 // ✅ Explicit per-take thumbnail (unique cache-bust per take id)
 function muxThumbUrl(playbackId: string, takeId: string) {
-  // time=0 is fine; you can change to time=1 or time=2 if you prefer a less-black first frame
-  // cb=takeId ensures each take has its own cached thumbnail URL
+  // You can change time=0 to time=1 for less-black first frames
   return `https://image.mux.com/${playbackId}/thumbnail.png?time=0&width=960&fit_mode=pad&cb=${encodeURIComponent(
     takeId
   )}`;
+}
+
+function preloadImage(src: string) {
+  return new Promise<void>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve();
+    img.onerror = () => reject();
+    img.src = src;
+  });
 }
 
 async function ensureHlsJsLoaded() {
@@ -125,8 +133,8 @@ export default function TakesClient() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsInstanceRef = useRef<any>(null);
 
-  // Mask while new stream loads
-  const [videoLoading, setVideoLoading] = useState(true);
+  // Track active take id to avoid stale async poster setting
+  const activeTakeIdRef = useRef<string | null>(null);
 
   const showingThread = viewMode.kind === "thread";
   const showingOriginal = viewMode.kind === "original";
@@ -140,17 +148,16 @@ export default function TakesClient() {
   const visibleIndex = showingOriginal ? 0 : showingThread ? threadIndex : activeIndex;
   const activeTake = visibleList[visibleIndex];
 
+  useEffect(() => {
+    activeTakeIdRef.current = activeTake?.id ?? null;
+  }, [activeTake?.id]);
+
   const activeRootId = useMemo(() => {
     if (!activeTake) return null;
     return activeTake.parent_take_id ?? activeTake.id;
   }, [activeTake]);
 
   const activeTopicName = activeTake?.topics?.[0]?.name ?? "Topic";
-
-  const activePoster = useMemo(() => {
-    if (!activeTake?.playback_id) return "";
-    return muxThumbUrl(activeTake.playback_id, activeTake.id);
-  }, [activeTake?.playback_id, activeTake?.id]);
 
   /* ---------------- USER ---------------- */
   useEffect(() => {
@@ -182,10 +189,7 @@ export default function TakesClient() {
       return;
     }
 
-    const { data: topicsData } = await supabase
-      .from("topics")
-      .select("id, name")
-      .order("name");
+    const { data: topicsData } = await supabase.from("topics").select("id, name").order("name");
 
     const { data: followedData } = await supabase
       .from("user_topics")
@@ -216,11 +220,7 @@ export default function TakesClient() {
     if (!user) return;
 
     if (followed.has(topicId)) {
-      await supabase
-        .from("user_topics")
-        .delete()
-        .eq("user_id", user.id)
-        .eq("topic_id", topicId);
+      await supabase.from("user_topics").delete().eq("user_id", user.id).eq("topic_id", topicId);
 
       setFollowed((prev) => {
         const next = new Set(prev);
@@ -252,17 +252,13 @@ export default function TakesClient() {
       if (isFollowing) {
         channel = supabase
           .channel("takes-following-user-topics")
-          .on(
-            "postgres_changes",
-            { event: "*", schema: "public", table: "user_topics" },
-            async () => {
-              setViewMode({ kind: "feed" });
-              setThreadTakes([]);
-              setThreadIndex(0);
-              setOriginalTake(null);
-              await loadFeed();
-            }
-          )
+          .on("postgres_changes", { event: "*", schema: "public", table: "user_topics" }, async () => {
+            setViewMode({ kind: "feed" });
+            setThreadTakes([]);
+            setThreadIndex(0);
+            setOriginalTake(null);
+            await loadFeed();
+          })
           .subscribe();
       }
     }
@@ -329,9 +325,7 @@ export default function TakesClient() {
       return;
     }
 
-    const topicIds = (followedData ?? [])
-      .map((r: any) => r.topic_id)
-      .filter((x: any) => typeof x === "number");
+    const topicIds = (followedData ?? []).map((r: any) => r.topic_id).filter((x: any) => typeof x === "number");
 
     setFollowed(new Set<number>(topicIds));
 
@@ -375,9 +369,6 @@ export default function TakesClient() {
     setLoadingThread(true);
     setThreadIndex(0);
 
-    // Two stances rule:
-    // - Against: stance === "against"
-    // - In favor: anything not against (including null)
     let query = supabase
       .from("takes")
       .select(
@@ -389,9 +380,7 @@ export default function TakesClient() {
       .limit(50);
 
     const { data, error } =
-      stance === "against"
-        ? await query.eq("stance", "against")
-        : await query.or("stance.is.null,stance.neq.against");
+      stance === "against" ? await query.eq("stance", "against") : await query.or("stance.is.null,stance.neq.against");
 
     if (error) {
       setThreadError("Could not load replies.");
@@ -472,10 +461,9 @@ export default function TakesClient() {
     else setActiveIndex(0);
   }
 
-  /* ---------------- VIDEO ATTACH ---------------- */
-  useEffect(() => {
-    setVideoLoading(true);
-
+  /* ---------------- VIDEO ATTACH (NO MASK; FIX WRONG POSTER FLASH) ---------------- */
+  useLayoutEffect(() => {
+    // cleanup previous hls instance
     if (hlsInstanceRef.current) {
       try {
         hlsInstanceRef.current.destroy();
@@ -483,42 +471,73 @@ export default function TakesClient() {
       hlsInstanceRef.current = null;
     }
 
-    const videoEl = videoRef.current;
-    if (!activeTake || !videoEl || !activeTake.playback_id) return;
+    const v = videoRef.current;
+    if (!v) return;
 
-    const src = muxHlsUrl(activeTake.playback_id);
-    const canPlayHlsNatively =
-      videoEl.canPlayType("application/vnd.apple.mpegurl") !== "";
+    // Always hard-reset the element so we never paint an old frame/poster
+    try {
+      v.pause();
+    } catch {}
+
+    // Clear poster immediately so browser can't reuse prior cached poster
+    v.poster = "";
+    v.removeAttribute("poster");
+
+    // Clear src immediately to avoid showing old video frame
+    v.removeAttribute("src");
+    v.load();
+
+    // If no active take / no playback yet, stop here
+    if (!activeTake?.playback_id) return;
+
+    const takeId = activeTake.id;
+    const playbackId = activeTake.playback_id;
+    const src = muxHlsUrl(playbackId);
+
+    // Preload poster, then apply only if still same take
+    const posterUrl = muxThumbUrl(playbackId, takeId);
+    preloadImage(posterUrl)
+      .then(() => {
+        const still = activeTakeIdRef.current === takeId;
+        const vv = videoRef.current;
+        if (!still || !vv) return;
+        vv.poster = posterUrl;
+      })
+      .catch(() => {
+        // keep poster blank if it fails
+      });
+
+    const canPlayHlsNatively = v.canPlayType("application/vnd.apple.mpegurl") !== "";
+
+    let cancelled = false;
 
     async function attach() {
-      const v = videoRef.current;
-      if (!v) return;
-
-      // ✅ Force the correct poster immediately (per-take)
-      try {
-        v.poster = muxThumbUrl(activeTake.playback_id!, activeTake.id);
-      } catch {}
-
-      // hard reset the element
-      try {
-        v.pause();
-      } catch {}
-      v.removeAttribute("src");
-      v.load();
+      const vv = videoRef.current;
+      if (!vv || cancelled) return;
 
       if (canPlayHlsNatively) {
-        v.src = src;
-        v.load();
-        v.play().catch(() => {});
+        vv.src = src;
+        vv.load();
+        vv.play().catch(() => {});
         return;
       }
 
       const ok = await ensureHlsJsLoaded();
+      if (cancelled) return;
+
+      const vvv = videoRef.current;
+
+      // If we can't use Hls.js, fall back to setting src directly
       if (!ok || !window.Hls) {
-        v.src = src;
-        v.load();
+        if (!vvv) return;
+        vvv.src = src;
+        vvv.load();
+        vvv.play?.().catch?.(() => {});
         return;
       }
+
+      // If we can use Hls.js but the video element disappeared, stop
+      if (!vvv) return;
 
       const Hls = window.Hls;
       if (Hls.isSupported()) {
@@ -526,23 +545,23 @@ export default function TakesClient() {
         hlsInstanceRef.current = hls;
 
         hls.loadSource(src);
-        hls.attachMedia(v);
+        hls.attachMedia(vvv);
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          v.play().catch(() => {});
-        });
-
-        hls.on(Hls.Events.ERROR, () => {
-          // If HLS errors, at least stop masking so user sees something
-          setVideoLoading(false);
+          vvv.play().catch(() => {});
         });
       } else {
-        v.src = src;
-        v.load();
+        vvv.src = src;
+        vvv.load();
+        vvv.play?.().catch?.(() => {});
       }
     }
 
     attach();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTake?.id]);
 
@@ -778,33 +797,18 @@ export default function TakesClient() {
             <video
               key={activeTake?.id}
               ref={videoRef}
-              poster={activePoster || undefined}
               preload="metadata"
-              className={`w-full h-full object-contain bg-black transition-opacity ${
-                videoLoading ? "opacity-0" : "opacity-100"
-              }`}
+              className="w-full h-full object-contain bg-black"
               playsInline
               controls
-              onLoadStart={() => setVideoLoading(true)}
-              onLoadedData={() => setVideoLoading(false)}
-              onCanPlay={() => setVideoLoading(false)}
-              onError={() => setVideoLoading(false)}
             />
-
-            {videoLoading && (
-              <div className="absolute inset-0 flex items-center justify-center bg-black">
-                <div className="text-white/90 text-sm">Loading video…</div>
-              </div>
-            )}
 
             {/* Top-left overlay */}
             <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
               <div className="font-medium">
                 {activeTopicName}
                 {showingThread ? <span className="ml-2 text-xs opacity-80">(thread)</span> : null}
-                {showingOriginal ? (
-                  <span className="ml-2 text-xs opacity-80">(original)</span>
-                ) : null}
+                {showingOriginal ? <span className="ml-2 text-xs opacity-80">(original)</span> : null}
               </div>
 
               <div className="text-xs opacity-80">
