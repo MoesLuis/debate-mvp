@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import TakesTopicsRibbon from "@/components/TakesTopicsRibbon";
@@ -30,23 +30,6 @@ declare global {
 
 function muxHlsUrl(playbackId: string) {
   return `https://stream.mux.com/${playbackId}.m3u8`;
-}
-
-// ✅ Explicit per-take thumbnail (unique cache-bust per take id)
-function muxThumbUrl(playbackId: string, takeId: string) {
-  // You can change time=0 to time=1 for less-black first frames
-  return `https://image.mux.com/${playbackId}/thumbnail.png?time=0&width=960&fit_mode=pad&cb=${encodeURIComponent(
-    takeId
-  )}`;
-}
-
-function preloadImage(src: string) {
-  return new Promise<void>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve();
-    img.onerror = () => reject();
-    img.src = src;
-  });
 }
 
 async function ensureHlsJsLoaded() {
@@ -100,7 +83,6 @@ export default function TakesClient() {
   const [followed, setFollowed] = useState<Set<number>>(new Set());
   const [loadingTopics, setLoadingTopics] = useState(false);
 
-  // Current user
   const [userId, setUserId] = useState<string | null>(null);
 
   // Feed takes (root + responses)
@@ -109,32 +91,41 @@ export default function TakesClient() {
   const [feedError, setFeedError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Thread browsing (filtered stance replies under a root)
+  // Infinite loading state
+  const [feedHasMore, setFeedHasMore] = useState(true);
+  const [feedLoadingMore, setFeedLoadingMore] = useState(false);
+  const [feedCursorCreatedAt, setFeedCursorCreatedAt] = useState<string | null>(null);
+
+  // Not interested IDs (cached client-side)
+  const [notInterestedIds, setNotInterestedIds] = useState<Set<string>>(new Set());
+
+  // Thread browsing
   const [viewMode, setViewMode] = useState<ViewMode>({ kind: "feed" });
   const [threadTakes, setThreadTakes] = useState<TakeRow[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
   const [threadIndex, setThreadIndex] = useState(0);
 
-  // Show original (root take)
+  // Show original
   const [originalTake, setOriginalTake] = useState<TakeRow | null>(null);
   const [loadingOriginal, setLoadingOriginal] = useState(false);
 
-  // Reaction state
+  // Reactions
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState<number>(0);
   const [likingBusy, setLikingBusy] = useState(false);
 
-  // Join take stance picker
+  // Join picker
   const [joinPickerOpen, setJoinPickerOpen] = useState(false);
   const [joinRootId, setJoinRootId] = useState<string | null>(null);
 
-  // Video playback refs
+  // Video playback
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsInstanceRef = useRef<any>(null);
+  const [videoLoading, setVideoLoading] = useState(true);
 
-  // Track active take id to avoid stale async poster setting
-  const activeTakeIdRef = useRef<string | null>(null);
+  // Swipe detection
+  const swipeStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
 
   const showingThread = viewMode.kind === "thread";
   const showingOriginal = viewMode.kind === "original";
@@ -148,16 +139,10 @@ export default function TakesClient() {
   const visibleIndex = showingOriginal ? 0 : showingThread ? threadIndex : activeIndex;
   const activeTake = visibleList[visibleIndex];
 
-  useEffect(() => {
-    activeTakeIdRef.current = activeTake?.id ?? null;
-  }, [activeTake?.id]);
-
   const activeRootId = useMemo(() => {
     if (!activeTake) return null;
     return activeTake.parent_take_id ?? activeTake.id;
   }, [activeTake]);
-
-  const activeTopicName = activeTake?.topics?.[0]?.name ?? "Topic";
 
   /* ---------------- USER ---------------- */
   useEffect(() => {
@@ -168,6 +153,33 @@ export default function TakesClient() {
       setUserId(user?.id ?? null);
     })();
   }, []);
+
+  /* ---------------- LOAD NOT INTERESTED ---------------- */
+  async function loadNotInterested() {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      setNotInterestedIds(new Set());
+      return;
+    }
+
+    // Keep it bounded (MVP). We can switch to a server-side view/RPC later.
+    const { data, error } = await supabase
+      .from("take_not_interested")
+      .select("take_id")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(1000);
+
+    if (error) {
+      console.error("Failed loading not interested", error);
+      return;
+    }
+
+    const s = new Set<string>((data ?? []).map((r: any) => String(r.take_id)));
+    setNotInterestedIds(s);
+  }
 
   /* ---------------- LOAD TOPICS (Explore grid) ---------------- */
   useEffect(() => {
@@ -189,7 +201,10 @@ export default function TakesClient() {
       return;
     }
 
-    const { data: topicsData } = await supabase.from("topics").select("id, name").order("name");
+    const { data: topicsData } = await supabase
+      .from("topics")
+      .select("id, name")
+      .order("name");
 
     const { data: followedData } = await supabase
       .from("user_topics")
@@ -220,7 +235,11 @@ export default function TakesClient() {
     if (!user) return;
 
     if (followed.has(topicId)) {
-      await supabase.from("user_topics").delete().eq("user_id", user.id).eq("topic_id", topicId);
+      await supabase
+        .from("user_topics")
+        .delete()
+        .eq("user_id", user.id)
+        .eq("topic_id", topicId);
 
       setFollowed((prev) => {
         const next = new Set(prev);
@@ -242,23 +261,39 @@ export default function TakesClient() {
     let channel: any;
 
     async function init() {
+      // Reset modes
       setViewMode({ kind: "feed" });
       setThreadTakes([]);
       setThreadIndex(0);
       setOriginalTake(null);
 
-      await loadFeed();
+      setActiveIndex(0);
+      setFeedCursorCreatedAt(null);
+      setFeedHasMore(true);
+
+      await loadNotInterested();
+      await loadFeedFirstPage();
 
       if (isFollowing) {
         channel = supabase
           .channel("takes-following-user-topics")
-          .on("postgres_changes", { event: "*", schema: "public", table: "user_topics" }, async () => {
-            setViewMode({ kind: "feed" });
-            setThreadTakes([]);
-            setThreadIndex(0);
-            setOriginalTake(null);
-            await loadFeed();
-          })
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "user_topics" },
+            async () => {
+              setViewMode({ kind: "feed" });
+              setThreadTakes([]);
+              setThreadIndex(0);
+              setOriginalTake(null);
+
+              setActiveIndex(0);
+              setFeedCursorCreatedAt(null);
+              setFeedHasMore(true);
+
+              await loadNotInterested();
+              await loadFeedFirstPage();
+            }
+          )
           .subscribe();
       }
     }
@@ -271,7 +306,41 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFollowing]);
 
-  async function loadFeed() {
+  function normalizeTopicsField(r: any): TakeRow {
+    return {
+      ...(r as TakeRow),
+      topics: Array.isArray(r.topics) ? r.topics : r.topics ? [r.topics] : null,
+    };
+  }
+
+  async function buildFeedBaseQuery(topicIds: number[] | null) {
+    let q = supabase
+      .from("takes")
+      .select(
+        "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+      )
+      .eq("status", "ready")
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (topicIds && topicIds.length > 0) {
+      q = q.in("topic_id", topicIds);
+    }
+
+    // Exclude not-interested (client-side cached IDs).
+    // Supabase .not('id','in', ...) expects a string like "(...)".
+    if (notInterestedIds.size > 0) {
+      const ids = Array.from(notInterestedIds)
+        .slice(0, 1000)
+        .map((id) => `"${id}"`)
+        .join(",");
+      q = q.not("id", "in", `(${ids})`);
+    }
+
+    return q;
+  }
+
+  async function loadFeedFirstPage() {
     setFeedError(null);
     setLoadingFeed(true);
 
@@ -286,80 +355,183 @@ export default function TakesClient() {
       return;
     }
 
-    if (!isFollowing) {
-      const { data, error } = await supabase
-        .from("takes")
-        .select(
-          "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
-        )
-        .eq("status", "ready")
-        .order("created_at", { ascending: false })
-        .limit(50);
+    // Figure topicIds for following
+    let topicIds: number[] | null = null;
 
-      if (error) {
-        setFeedError("Could not load explore feed.");
-        setTakes([]);
+    if (isFollowing) {
+      const { data: followedData, error: fErr } = await supabase
+        .from("user_topics")
+        .select("topic_id")
+        .eq("user_id", user.id);
+
+      if (fErr) {
+        setFeedError("Could not load your topics.");
         setLoadingFeed(false);
         return;
       }
 
-      const rows = ((data ?? []) as unknown as TakeRow[]).map((r) => ({
-        ...r,
-        topics: Array.isArray(r.topics) ? r.topics : r.topics ? [r.topics as any] : null,
-      }));
+      topicIds = (followedData ?? [])
+        .map((r: any) => r.topic_id)
+        .filter((x: any) => typeof x === "number");
 
-      setTakes(rows);
-      setActiveIndex(0);
-      setLoadingFeed(false);
-      return;
+      setFollowed(new Set<number>(topicIds));
+
+      if (topicIds.length === 0) {
+        setTakes([]);
+        setLoadingFeed(false);
+        return;
+      }
     }
 
-    const { data: followedData, error: fErr } = await supabase
-      .from("user_topics")
-      .select("topic_id")
-      .eq("user_id", user.id);
+    const q = await buildFeedBaseQuery(topicIds);
 
-    if (fErr) {
-      setFeedError("Could not load your topics.");
-      setLoadingFeed(false);
-      return;
-    }
+    const { data, error } = await q;
 
-    const topicIds = (followedData ?? []).map((r: any) => r.topic_id).filter((x: any) => typeof x === "number");
-
-    setFollowed(new Set<number>(topicIds));
-
-    if (topicIds.length === 0) {
+    if (error) {
+      setFeedError(isFollowing ? "Could not load takes feed." : "Could not load explore feed.");
       setTakes([]);
-      setActiveIndex(0);
       setLoadingFeed(false);
       return;
     }
 
-    const { data: takesData, error: tErr } = await supabase
+    const rows = ((data ?? []) as any[]).map(normalizeTopicsField);
+
+    setTakes(rows);
+    setActiveIndex(0);
+
+    const last = rows[rows.length - 1];
+    setFeedCursorCreatedAt(last?.created_at ?? null);
+
+    setFeedHasMore(rows.length >= 50);
+    setLoadingFeed(false);
+  }
+
+  async function loadFeedMore() {
+    if (loadingFeed || feedLoadingMore || !feedHasMore) return;
+    if (!feedCursorCreatedAt) return;
+
+    setFeedLoadingMore(true);
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      setFeedLoadingMore(false);
+      return;
+    }
+
+    let topicIds: number[] | null = null;
+
+    if (isFollowing) {
+      const { data: followedData } = await supabase
+        .from("user_topics")
+        .select("topic_id")
+        .eq("user_id", user.id);
+
+      topicIds = (followedData ?? [])
+        .map((r: any) => r.topic_id)
+        .filter((x: any) => typeof x === "number");
+
+      if (topicIds.length === 0) {
+        setFeedHasMore(false);
+        setFeedLoadingMore(false);
+        return;
+      }
+    }
+
+    // Same base query but paginate by created_at
+    let q = supabase
       .from("takes")
       .select(
         "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
       )
       .eq("status", "ready")
-      .in("topic_id", topicIds)
+      .lt("created_at", feedCursorCreatedAt)
       .order("created_at", { ascending: false })
       .limit(50);
 
-    if (tErr) {
-      setFeedError("Could not load takes feed.");
-      setLoadingFeed(false);
+    if (topicIds && topicIds.length > 0) {
+      q = q.in("topic_id", topicIds);
+    }
+
+    if (notInterestedIds.size > 0) {
+      const ids = Array.from(notInterestedIds)
+        .slice(0, 1000)
+        .map((id) => `"${id}"`)
+        .join(",");
+      q = q.not("id", "in", `(${ids})`);
+    }
+
+    const { data, error } = await q;
+
+    if (error) {
+      console.error("load more error", error);
+      setFeedLoadingMore(false);
       return;
     }
 
-    const rows = ((takesData ?? []) as unknown as TakeRow[]).map((r) => ({
-      ...r,
-      topics: Array.isArray(r.topics) ? r.topics : r.topics ? [r.topics as any] : null,
-    }));
+    const rows = ((data ?? []) as any[]).map(normalizeTopicsField);
 
-    setTakes(rows);
-    setActiveIndex(0);
-    setLoadingFeed(false);
+    setTakes((prev) => {
+      const seen = new Set(prev.map((t) => t.id));
+      const merged = [...prev];
+      for (const r of rows) {
+        if (!seen.has(r.id)) merged.push(r);
+      }
+      return merged;
+    });
+
+    const last = rows[rows.length - 1];
+    setFeedCursorCreatedAt(last?.created_at ?? feedCursorCreatedAt);
+    setFeedHasMore(rows.length >= 50);
+    setFeedLoadingMore(false);
+  }
+
+  // Auto-load more when near the end (feed only)
+  useEffect(() => {
+    if (showingThread || showingOriginal) return;
+    if (takes.length === 0) return;
+
+    const remaining = takes.length - 1 - activeIndex;
+    if (remaining <= 5) {
+      loadFeedMore();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex, takes.length, showingThread, showingOriginal]);
+
+  /* ---------------- NOT INTERESTED ---------------- */
+  async function markNotInterested(takeId: string) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      alert("Please log in first.");
+      return;
+    }
+
+    // Insert (ignore duplicates)
+    const { error } = await supabase.from("take_not_interested").insert({
+      user_id: user.id,
+      take_id: takeId,
+    });
+
+    if (error) {
+      // If it's a unique violation, it’s still fine; just proceed.
+      console.warn("not interested insert error", error);
+    }
+
+    setNotInterestedIds((prev) => {
+      const next = new Set(prev);
+      next.add(takeId);
+      return next;
+    });
+
+    // Remove locally from feed list (only in feed mode)
+    if (viewMode.kind === "feed") {
+      setTakes((prev) => prev.filter((t) => t.id !== takeId));
+      setActiveIndex((i) => Math.max(0, Math.min(i, Math.max(0, takes.length - 2))));
+    }
   }
 
   /* ---------------- THREAD LOADERS ---------------- */
@@ -380,7 +552,9 @@ export default function TakesClient() {
       .limit(50);
 
     const { data, error } =
-      stance === "against" ? await query.eq("stance", "against") : await query.or("stance.is.null,stance.neq.against");
+      stance === "against"
+        ? await query.eq("stance", "against")
+        : await query.or("stance.is.null,stance.neq.against");
 
     if (error) {
       setThreadError("Could not load replies.");
@@ -389,10 +563,7 @@ export default function TakesClient() {
       return;
     }
 
-    const rows = ((data ?? []) as unknown as TakeRow[]).map((r) => ({
-      ...r,
-      topics: Array.isArray(r.topics) ? r.topics : r.topics ? [r.topics as any] : null,
-    }));
+    const rows = ((data ?? []) as any[]).map(normalizeTopicsField);
 
     setThreadTakes(rows);
     setThreadIndex(0);
@@ -435,14 +606,7 @@ export default function TakesClient() {
       return;
     }
 
-    const rootRow = {
-      ...(data as unknown as TakeRow),
-      topics: Array.isArray((data as any).topics)
-        ? (data as any).topics
-        : (data as any).topics
-        ? [(data as any).topics]
-        : null,
-    };
+    const rootRow = normalizeTopicsField(data);
 
     setOriginalTake(rootRow);
     setViewMode({ kind: "original", rootTakeId: rootId, returnTakeId: activeTake.id });
@@ -461,9 +625,10 @@ export default function TakesClient() {
     else setActiveIndex(0);
   }
 
-  /* ---------------- VIDEO ATTACH (NO MASK; FIX WRONG POSTER FLASH) ---------------- */
-  useLayoutEffect(() => {
-    // cleanup previous hls instance
+  /* ---------------- VIDEO ATTACH ---------------- */
+  useEffect(() => {
+    setVideoLoading(true);
+
     if (hlsInstanceRef.current) {
       try {
         hlsInstanceRef.current.destroy();
@@ -471,97 +636,54 @@ export default function TakesClient() {
       hlsInstanceRef.current = null;
     }
 
-    const v = videoRef.current;
-    if (!v) return;
+    const videoEl = videoRef.current;
+    if (!activeTake || !videoEl || !activeTake.playback_id) return;
 
-    // Always hard-reset the element so we never paint an old frame/poster
-    try {
-      v.pause();
-    } catch {}
-
-    // Clear poster immediately so browser can't reuse prior cached poster
-    v.poster = "";
-    v.removeAttribute("poster");
-
-    // Clear src immediately to avoid showing old video frame
-    v.removeAttribute("src");
-    v.load();
-
-    // If no active take / no playback yet, stop here
-    if (!activeTake?.playback_id) return;
-
-    const takeId = activeTake.id;
-    const playbackId = activeTake.playback_id;
-    const src = muxHlsUrl(playbackId);
-
-    // Preload poster, then apply only if still same take
-    const posterUrl = muxThumbUrl(playbackId, takeId);
-    preloadImage(posterUrl)
-      .then(() => {
-        const still = activeTakeIdRef.current === takeId;
-        const vv = videoRef.current;
-        if (!still || !vv) return;
-        vv.poster = posterUrl;
-      })
-      .catch(() => {
-        // keep poster blank if it fails
-      });
-
-    const canPlayHlsNatively = v.canPlayType("application/vnd.apple.mpegurl") !== "";
-
-    let cancelled = false;
+    const src = muxHlsUrl(activeTake.playback_id);
+    const canPlayHlsNatively =
+      videoEl.canPlayType("application/vnd.apple.mpegurl") !== "";
 
     async function attach() {
-      const vv = videoRef.current;
-      if (!vv || cancelled) return;
+      const v = videoRef.current;
+      if (!v) return;
+
+      try {
+        v.pause();
+      } catch {}
+      v.removeAttribute("src");
+      v.load();
 
       if (canPlayHlsNatively) {
-        vv.src = src;
-        vv.load();
-        vv.play().catch(() => {});
+        v.src = src;
+        v.load();
+        v.play().catch(() => {});
         return;
       }
 
       const ok = await ensureHlsJsLoaded();
-      if (cancelled) return;
-
-      const vvv = videoRef.current;
-
-      // If we can't use Hls.js, fall back to setting src directly
       if (!ok || !window.Hls) {
-        if (!vvv) return;
-        vvv.src = src;
-        vvv.load();
-        vvv.play?.().catch?.(() => {});
+        v.src = src;
+        v.load();
         return;
       }
-
-      // If we can use Hls.js but the video element disappeared, stop
-      if (!vvv) return;
 
       const Hls = window.Hls;
       if (Hls.isSupported()) {
         const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
         hlsInstanceRef.current = hls;
-
         hls.loadSource(src);
-        hls.attachMedia(vvv);
+        hls.attachMedia(v);
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          vvv.play().catch(() => {});
+          v.play().catch(() => {});
         });
       } else {
-        vvv.src = src;
-        vvv.load();
-        vvv.play?.().catch?.(() => {});
+        v.src = src;
+        v.load();
       }
     }
 
     attach();
-
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTake?.id]);
 
@@ -594,12 +716,17 @@ export default function TakesClient() {
       if (e.key === "ArrowUp") prev();
       if (e.key === "Escape" && showingThread) backToEntryInThread();
       if (e.key === "Escape" && showingOriginal) backToThreadFromOriginal();
+      if (e.key === "ArrowLeft" && viewMode.kind === "feed" && activeTake?.id) {
+        markNotInterested(activeTake.id);
+      }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showingThread, showingOriginal, takes.length, threadTakes.length]);
+  }, [showingThread, showingOriginal, takes.length, threadTakes.length, viewMode.kind, activeTake?.id]);
+
+  const activeTopicName = activeTake?.topics?.[0]?.name ?? "Topic";
 
   /* ---------------- REACTIONS ---------------- */
   useEffect(() => {
@@ -696,7 +823,7 @@ export default function TakesClient() {
     await openThread(activeRootId, "for", activeTake.id);
   }
 
-  /* ---------------- JOIN TAKE (reply-to-root always) ---------------- */
+  /* ---------------- JOIN TAKE ---------------- */
   function openJoinPicker() {
     if (!activeRootId) return;
     setJoinRootId(activeRootId);
@@ -710,10 +837,31 @@ export default function TakesClient() {
   }
 
   function handleLiveDebate() {
-    alert("Live debate requests are coming next 😈");
+    alert("Live debate requests are coming next");
   }
 
   const showShowOriginalButton = !!activeTake?.parent_take_id && !showingOriginal;
+
+  /* ---------------- SWIPE HANDLERS (feed only) ---------------- */
+  function onPointerDown(e: React.PointerEvent) {
+    if (viewMode.kind !== "feed") return;
+    swipeStartRef.current = { x: e.clientX, y: e.clientY, t: Date.now() };
+  }
+
+  function onPointerUp(e: React.PointerEvent) {
+    if (viewMode.kind !== "feed") return;
+    const start = swipeStartRef.current;
+    swipeStartRef.current = null;
+    if (!start || !activeTake?.id) return;
+
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+
+    // Swipe left threshold
+    if (dx < -90 && Math.abs(dy) < 80) {
+      markNotInterested(activeTake.id);
+    }
+  }
 
   return (
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
@@ -770,7 +918,7 @@ export default function TakesClient() {
               <div className="text-xl font-semibold mb-2">Couldn’t load</div>
               <p className="text-sm text-zinc-600">{feedError}</p>
               <button
-                onClick={() => loadFeed()}
+                onClick={() => loadFeedFirstPage()}
                 className="mt-4 px-4 py-2 rounded border border-zinc-400 bg-white hover:bg-zinc-50 text-sm"
               >
                 Retry
@@ -781,9 +929,7 @@ export default function TakesClient() {
           <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
             <div className="text-center">
               <div className="text-2xl font-semibold mb-2">No takes yet</div>
-              <p className="text-sm text-zinc-600">
-                Record the first take for one of your topics.
-              </p>
+              <p className="text-sm text-zinc-600">Record the first take for one of your topics.</p>
               <button
                 onClick={() => router.push("/takes/record")}
                 className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90"
@@ -793,15 +939,28 @@ export default function TakesClient() {
             </div>
           </div>
         ) : (
-          <div className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative">
+          <div
+            className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative"
+            onPointerDown={onPointerDown}
+            onPointerUp={onPointerUp}
+          >
             <video
               key={activeTake?.id}
               ref={videoRef}
-              preload="metadata"
-              className="w-full h-full object-contain bg-black"
+              className={`w-full h-full object-contain bg-black transition-opacity ${
+                videoLoading ? "opacity-0" : "opacity-100"
+              }`}
               playsInline
               controls
+              onLoadedData={() => setVideoLoading(false)}
+              onCanPlay={() => setVideoLoading(false)}
             />
+
+            {videoLoading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black">
+                <div className="text-white/90 text-sm">Loading video…</div>
+              </div>
+            )}
 
             {/* Top-left overlay */}
             <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
@@ -834,7 +993,7 @@ export default function TakesClient() {
               )}
             </div>
 
-            {/* Thread empty / loading / error */}
+            {/* Thread empty / loading / error overlays */}
             {showingThread && !loadingThread && threadTakes.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
@@ -871,6 +1030,7 @@ export default function TakesClient() {
               </div>
             )}
 
+            {/* Center-left Back button while browsing thread */}
             {showingThread && (
               <button
                 onClick={backToEntryInThread}
@@ -881,6 +1041,7 @@ export default function TakesClient() {
               </button>
             )}
 
+            {/* Prev/Next */}
             {!showingOriginal && (
               <div className="absolute left-4 bottom-4 flex gap-2">
                 <button
@@ -897,6 +1058,24 @@ export default function TakesClient() {
                 >
                   ↓ Next
                 </button>
+
+                {/* Not interested button (MVP + debug friendly) */}
+                {viewMode.kind === "feed" && activeTake?.id && (
+                  <button
+                    onClick={() => markNotInterested(activeTake.id)}
+                    className="ml-2 px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm"
+                    title="Not interested (also: swipe left)"
+                  >
+                    ← Not interested
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Subtle “loading more” */}
+            {viewMode.kind === "feed" && feedLoadingMore && (
+              <div className="absolute right-4 bottom-4 bg-black/60 text-white px-3 py-2 rounded text-xs">
+                Loading more…
               </div>
             )}
           </div>
