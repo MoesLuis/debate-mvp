@@ -10,10 +10,18 @@ type TakeRow = {
   created_at: string;
   stance: string | null;
   parent_take_id: string | null;
+  questions?: { question: string }[] | null;
 };
 
 function muxHlsUrl(playbackId: string) {
   return `https://stream.mux.com/${playbackId}.m3u8`;
+}
+
+function normalizeQuestionsField(r: any): TakeRow {
+  return {
+    ...(r as TakeRow),
+    questions: Array.isArray(r.questions) ? r.questions : r.questions ? [r.questions] : null,
+  };
 }
 
 export default function UserProfilePage() {
@@ -32,7 +40,10 @@ export default function UserProfilePage() {
   const [isFollowing, setIsFollowing] = useState(false);
   const [followBusy, setFollowBusy] = useState(false);
 
-  const isSelf = useMemo(() => !!viewerId && !!profileUserId && viewerId === profileUserId, [viewerId, profileUserId]);
+  const isSelf = useMemo(
+    () => !!viewerId && !!profileUserId && viewerId === profileUserId,
+    [viewerId, profileUserId]
+  );
 
   useEffect(() => {
     (async () => {
@@ -49,7 +60,11 @@ export default function UserProfilePage() {
     (async () => {
       setLoadingProfile(true);
 
-      const { data, error } = await supabase.from("profiles").select("handle").eq("user_id", profileUserId).maybeSingle();
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("handle")
+        .eq("user_id", profileUserId)
+        .maybeSingle();
 
       if (error) console.warn("profile load error", error);
 
@@ -66,7 +81,7 @@ export default function UserProfilePage() {
 
       const { data, error } = await supabase
         .from("takes")
-        .select("id, playback_id, created_at, stance, parent_take_id")
+        .select("id, playback_id, created_at, stance, parent_take_id, questions(question)")
         .eq("status", "ready")
         .eq("user_id", profileUserId)
         .order("created_at", { ascending: false })
@@ -79,7 +94,7 @@ export default function UserProfilePage() {
         return;
       }
 
-      setTakes((data ?? []) as TakeRow[]);
+      setTakes(((data ?? []) as any[]).map(normalizeQuestionsField));
       setLoadingTakes(false);
     })();
   }, [profileUserId]);
@@ -190,24 +205,36 @@ export default function UserProfilePage() {
         <div className="mt-3 text-sm text-zinc-600">No takes yet.</div>
       ) : (
         <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-          {takes.map((t) => (
-            <div key={t.id} className="rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden">
-              <div className="px-3 py-2 text-xs text-zinc-700 flex items-center justify-between">
-                <div>
-                  {t.parent_take_id ? "Response" : "Root"} · {t.stance ?? "neutral"}
-                </div>
-                <div className="opacity-70">{new Date(t.created_at).toLocaleString()}</div>
-              </div>
+          {takes.map((t) => {
+            const questionText = t.questions?.[0]?.question ?? null;
 
-              {t.playback_id ? (
-                <video className="w-full aspect-video bg-black" controls playsInline src={muxHlsUrl(t.playback_id)} />
-              ) : (
-                <div className="w-full aspect-video bg-black flex items-center justify-center text-white/80 text-sm">
-                  No playback
+            return (
+              <div key={t.id} className="rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden">
+                {/* Top meta line stays ABOVE the video (as you wanted) */}
+                <div className="px-3 py-2 text-xs text-zinc-700 flex items-center justify-between">
+                  <div>
+                    {t.parent_take_id ? "Response" : "Root"} · {t.stance ?? "neutral"}
+                  </div>
+                  <div className="opacity-70">{new Date(t.created_at).toLocaleString()}</div>
                 </div>
-              )}
-            </div>
-          ))}
+
+                {t.playback_id ? (
+                  <video className="w-full aspect-video bg-black" controls playsInline src={muxHlsUrl(t.playback_id)} />
+                ) : (
+                  <div className="w-full aspect-video bg-black flex items-center justify-center text-white/80 text-sm">
+                    No playback
+                  </div>
+                )}
+
+                {/* Question goes BELOW the video */}
+                {questionText && (
+                  <div className="px-3 py-2 text-sm text-zinc-800 border-t border-zinc-200">
+                    {questionText}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </main>

@@ -37,7 +37,9 @@ async function ensureHlsJsLoaded() {
   if (window.Hls) return true;
 
   await new Promise<void>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>('script[data-hls="true"]');
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[data-hls="true"]'
+    );
     if (existing) {
       if (window.Hls) return resolve();
       existing.addEventListener("load", () => resolve());
@@ -92,10 +94,14 @@ export default function TakesClient() {
   // Infinite loading
   const [feedHasMore, setFeedHasMore] = useState(true);
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
-  const [feedCursorCreatedAt, setFeedCursorCreatedAt] = useState<string | null>(null);
+  const [feedCursorCreatedAt, setFeedCursorCreatedAt] = useState<string | null>(
+    null
+  );
 
   // Not interested IDs
-  const [notInterestedIds, setNotInterestedIds] = useState<Set<string>>(new Set());
+  const [notInterestedIds, setNotInterestedIds] = useState<Set<string>>(
+    new Set()
+  );
 
   // Thread browsing
   const [viewMode, setViewMode] = useState<ViewMode>({ kind: "feed" });
@@ -192,7 +198,9 @@ export default function TakesClient() {
       return;
     }
 
-    setNotInterestedIds(new Set<string>((data ?? []).map((r: any) => String(r.take_id))));
+    setNotInterestedIds(
+      new Set<string>((data ?? []).map((r: any) => String(r.take_id)))
+    );
   }
 
   /* ---------------- LOAD TOPICS (Explore grid) ---------------- */
@@ -215,7 +223,10 @@ export default function TakesClient() {
       return;
     }
 
-    const { data: topicsData } = await supabase.from("topics").select("id, name").order("name");
+    const { data: topicsData } = await supabase
+      .from("topics")
+      .select("id, name")
+      .order("name");
 
     const { data: followedData } = await supabase
       .from("user_topics")
@@ -246,7 +257,11 @@ export default function TakesClient() {
     if (!user) return;
 
     if (followed.has(topicId)) {
-      await supabase.from("user_topics").delete().eq("user_id", user.id).eq("topic_id", topicId);
+      await supabase
+        .from("user_topics")
+        .delete()
+        .eq("user_id", user.id)
+        .eq("topic_id", topicId);
 
       setFollowed((prev) => {
         const next = new Set(prev);
@@ -284,19 +299,23 @@ export default function TakesClient() {
       if (isFollowing) {
         channel = supabase
           .channel("takes-following-user-topics")
-          .on("postgres_changes", { event: "*", schema: "public", table: "user_topics" }, async () => {
-            setViewMode({ kind: "feed" });
-            setThreadTakes([]);
-            setThreadIndex(0);
-            setOriginalTake(null);
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "user_topics" },
+            async () => {
+              setViewMode({ kind: "feed" });
+              setThreadTakes([]);
+              setThreadIndex(0);
+              setOriginalTake(null);
 
-            setActiveIndex(0);
-            setFeedCursorCreatedAt(null);
-            setFeedHasMore(true);
+              setActiveIndex(0);
+              setFeedCursorCreatedAt(null);
+              setFeedHasMore(true);
 
-            await loadNotInterested();
-            await loadFeedFirstPage();
-          })
+              await loadNotInterested();
+              await loadFeedFirstPage();
+            }
+          )
           .subscribe();
       }
     }
@@ -319,7 +338,9 @@ export default function TakesClient() {
   async function buildFeedBaseQuery(topicIds: number[] | null) {
     let q = supabase
       .from("takes")
-      .select("id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)")
+      .select(
+        "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+      )
       .eq("status", "ready")
       .order("created_at", { ascending: false })
       .limit(50);
@@ -366,7 +387,9 @@ export default function TakesClient() {
         return;
       }
 
-      topicIds = (followedData ?? []).map((r: any) => Number(r.topic_id)).filter((x) => Number.isFinite(x));
+      topicIds = (followedData ?? [])
+        .map((r: any) => Number(r.topic_id))
+        .filter((x) => Number.isFinite(x));
       setFollowed(new Set<number>(topicIds));
 
       if (topicIds.length === 0) {
@@ -375,8 +398,10 @@ export default function TakesClient() {
         return;
       }
     } else {
-      // In explore, still load followed topics set so topic bubble can show correct state
-      const { data: followedData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
+      const { data: followedData } = await supabase
+        .from("user_topics")
+        .select("topic_id")
+        .eq("user_id", user.id);
       setFollowed(new Set<number>((followedData ?? []).map((r: any) => Number(r.topic_id))));
     }
 
@@ -418,8 +443,14 @@ export default function TakesClient() {
     let topicIds: number[] | null = null;
 
     if (isFollowing) {
-      const { data: followedData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
-      topicIds = (followedData ?? []).map((r: any) => Number(r.topic_id)).filter((x) => Number.isFinite(x));
+      const { data: followedData } = await supabase
+        .from("user_topics")
+        .select("topic_id")
+        .eq("user_id", user.id);
+
+      topicIds = (followedData ?? [])
+        .map((r: any) => Number(r.topic_id))
+        .filter((x) => Number.isFinite(x));
 
       if (topicIds.length === 0) {
         setFeedHasMore(false);
@@ -430,7 +461,9 @@ export default function TakesClient() {
 
     let q = supabase
       .from("takes")
-      .select("id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)")
+      .select(
+        "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+      )
       .eq("status", "ready")
       .lt("created_at", feedCursorCreatedAt)
       .order("created_at", { ascending: false })
@@ -502,7 +535,6 @@ export default function TakesClient() {
       return next;
     });
 
-    // Remove locally from feed list
     if (viewMode.kind === "feed") {
       setTakes((prev) => prev.filter((t) => t.id !== takeId));
       setActiveIndex((i) => Math.max(0, Math.min(i, Math.max(0, takes.length - 2))));
@@ -518,14 +550,18 @@ export default function TakesClient() {
 
     let query = supabase
       .from("takes")
-      .select("id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)")
+      .select(
+        "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+      )
       .eq("status", "ready")
       .eq("parent_take_id", rootTakeId)
       .order("created_at", { ascending: false })
       .limit(50);
 
     const { data, error } =
-      stance === "against" ? await query.eq("stance", "against") : await query.or("stance.is.null,stance.neq.against");
+      stance === "against"
+        ? await query.eq("stance", "against")
+        : await query.or("stance.is.null,stance.neq.against");
 
     if (error) {
       setThreadError("Could not load replies.");
@@ -563,7 +599,9 @@ export default function TakesClient() {
 
     const { data, error } = await supabase
       .from("takes")
-      .select("id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)")
+      .select(
+        "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+      )
       .eq("id", rootId)
       .maybeSingle();
 
@@ -870,33 +908,53 @@ export default function TakesClient() {
     pointerIdRef.current = null;
   }
 
+  function isInteractiveTarget(target: EventTarget | null) {
+    const el = target as HTMLElement | null;
+    if (!el) return false;
+    return !!el.closest(
+      'button, a, input, textarea, select, label, [role="button"], [data-no-swipe="true"]'
+    );
+  }
+
   function onCardPointerDown(e: React.PointerEvent) {
     if (viewMode.kind !== "feed") return;
     if (!activeTake?.id) return;
     if (dismissAnimating) return;
 
+    // If user is clicking a real control layered on top, don't start swipe tracking.
+    if (isInteractiveTarget(e.target)) return;
+
     pointerIdRef.current = e.pointerId;
     swipeStartRef.current = { x: e.clientX, y: e.clientY };
-    setDragging(true);
-
-    try {
-      (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
-    } catch {}
+    setDragging(false);
+    setDragX(0);
   }
 
   function onCardPointerMove(e: React.PointerEvent) {
     if (viewMode.kind !== "feed") return;
-    if (!dragging) return;
     const start = swipeStartRef.current;
     if (!start) return;
 
     const dx = e.clientX - start.x;
     const dy = e.clientY - start.y;
 
-    // Only treat as a swipe if mostly horizontal
-    if (Math.abs(dy) > 90) return;
+    // Do not start swipe unless horizontal intent is clear
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
 
-    // Only allow dragging left (negative)
+    // small deadzone
+    if (!dragging) {
+      if (absX < 10) return;
+      if (absX <= absY) return; // user is scrolling more vertically than swiping
+
+      // begin swipe officially
+      setDragging(true);
+      try {
+        (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+      } catch {}
+    }
+
+    // Once dragging, only allow dragging left
     setDragX(Math.min(0, dx));
   }
 
@@ -913,7 +971,6 @@ export default function TakesClient() {
     setDragging(false);
     setDragX(-width - 80);
 
-    // wait for transition to finish, then remove
     window.setTimeout(async () => {
       const id = activeTake.id;
       resetSwipe();
@@ -923,30 +980,45 @@ export default function TakesClient() {
 
   function onCardPointerUp(e: React.PointerEvent) {
     if (viewMode.kind !== "feed") return;
-    if (!dragging) return;
 
     const start = swipeStartRef.current;
     swipeStartRef.current = null;
-    setDragging(false);
 
-    if (!start) {
+    // If we never started dragging, treat it as a normal click/tap (do nothing)
+    if (!start || !dragging) {
+      setDragging(false);
       setDragX(0);
+      pointerIdRef.current = null;
       return;
     }
+
+    setDragging(false);
 
     const dx = e.clientX - start.x;
     const dy = e.clientY - start.y;
 
-    // threshold
     if (dx < -140 && Math.abs(dy) < 90) {
       dismissActiveTakeLeft();
-      return;
+    } else {
+      setDragX(0);
     }
 
-    // snap back
-    setDragX(0);
+    const pid = pointerIdRef.current;
+    pointerIdRef.current = null;
+    if (pid != null) {
+      try {
+        (e.currentTarget as HTMLDivElement).releasePointerCapture(pid);
+      } catch {}
+    }
+  }
 
-    // release capture
+  function onCardPointerCancel(e: React.PointerEvent) {
+    if (viewMode.kind !== "feed") return;
+    // cancel any swipe
+    setDragging(false);
+    setDragX(0);
+    swipeStartRef.current = null;
+
     const pid = pointerIdRef.current;
     pointerIdRef.current = null;
     if (pid != null) {
@@ -978,7 +1050,9 @@ export default function TakesClient() {
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <div className="w-full max-w-sm rounded-lg border border-zinc-300 bg-white p-4">
             <div className="text-lg font-semibold">Join this take</div>
-            <p className="text-sm text-zinc-600 mt-1">Choose how you’re replying to the original take:</p>
+            <p className="text-sm text-zinc-600 mt-1">
+              Choose how you’re replying to the original take:
+            </p>
 
             <div className="mt-4 grid grid-cols-2 gap-3">
               <button
@@ -1011,7 +1085,9 @@ export default function TakesClient() {
           <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
             <div className="text-center">
               <div className="text-2xl font-semibold mb-2">Loading…</div>
-              <p className="text-sm text-zinc-600">{isFollowing ? "Pulling takes from your topics" : "Exploring all takes"}</p>
+              <p className="text-sm text-zinc-600">
+                {isFollowing ? "Pulling takes from your topics" : "Exploring all takes"}
+              </p>
             </div>
           </div>
         ) : feedError ? (
@@ -1031,7 +1107,9 @@ export default function TakesClient() {
           <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
             <div className="text-center">
               <div className="text-2xl font-semibold mb-2">No takes yet</div>
-              <p className="text-sm text-zinc-600">Record the first take for one of your topics.</p>
+              <p className="text-sm text-zinc-600">
+                Record the first take for one of your topics.
+              </p>
               <button
                 onClick={() => router.push("/takes/record")}
                 className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90"
@@ -1043,10 +1121,12 @@ export default function TakesClient() {
         ) : (
           <div
             ref={cardRef}
-            className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative touch-none"
+            className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative"
+            style={{ touchAction: "pan-y" }}
             onPointerDown={onCardPointerDown}
             onPointerMove={onCardPointerMove}
             onPointerUp={onCardPointerUp}
+            onPointerCancel={onCardPointerCancel}
           >
             {/* Sliding layer */}
             <div
@@ -1077,7 +1157,7 @@ export default function TakesClient() {
               {/* Top-left overlay */}
               <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
                 <div className="font-medium flex items-center gap-2">
-                  {/* Topic bubble: click toggles follow in user_topics (updates ribbon via realtime) */}
+                  {/* Topic bubble */}
                   {activeTopicId ? (
                     <button
                       onClick={(e) => {
@@ -1107,13 +1187,25 @@ export default function TakesClient() {
                 </div>
 
                 {showShowOriginalButton && (
-                  <button onClick={showOriginal} className="mt-2 text-xs underline opacity-90 hover:opacity-100">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      showOriginal();
+                    }}
+                    className="mt-2 text-xs underline opacity-90 hover:opacity-100"
+                  >
                     {loadingOriginal ? "Loading original…" : "Show original"}
                   </button>
                 )}
 
                 {showingOriginal && viewMode.kind === "original" && (
-                  <button onClick={backToThreadFromOriginal} className="mt-2 text-xs underline opacity-90 hover:opacity-100">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      backToThreadFromOriginal();
+                    }}
+                    className="mt-2 text-xs underline opacity-90 hover:opacity-100"
+                  >
                     ← Back to thread
                   </button>
                 )}
@@ -1122,13 +1214,17 @@ export default function TakesClient() {
               {/* Thread empty / loading / error overlays */}
               {showingThread && !loadingThread && threadTakes.length === 0 && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">No replies on this side yet.</div>
+                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
+                    No replies on this side yet.
+                  </div>
                 </div>
               )}
 
               {showingThread && loadingThread && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">Loading thread…</div>
+                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">
+                    Loading thread…
+                  </div>
                 </div>
               )}
 
@@ -1138,8 +1234,11 @@ export default function TakesClient() {
                     {threadError}
                     <div className="mt-2">
                       <button
-                        onClick={() => {
-                          if (viewMode.kind === "thread") openThread(viewMode.rootTakeId, viewMode.stance, viewMode.entryTakeId);
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (viewMode.kind === "thread") {
+                            openThread(viewMode.rootTakeId, viewMode.stance, viewMode.entryTakeId);
+                          }
                         }}
                         className="px-3 py-1 rounded bg-white/90 text-black text-xs"
                       >
@@ -1153,7 +1252,10 @@ export default function TakesClient() {
               {/* Center-left Back button while browsing thread */}
               {showingThread && (
                 <button
-                  onClick={backToEntryInThread}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    backToEntryInThread();
+                  }}
                   className="absolute left-4 top-1/2 -translate-y-1/2 px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm"
                   title="Back to the take you started from"
                 >
@@ -1165,14 +1267,20 @@ export default function TakesClient() {
               {!showingOriginal && (
                 <div className="absolute left-4 bottom-4 flex gap-2">
                   <button
-                    onClick={prev}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      prev();
+                    }}
                     disabled={visibleIndex === 0}
                     className="px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm disabled:opacity-50"
                   >
                     ↑ Prev
                   </button>
                   <button
-                    onClick={next}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      next();
+                    }}
                     disabled={visibleIndex >= visibleList.length - 1}
                     className="px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm disabled:opacity-50"
                   >
@@ -1218,7 +1326,9 @@ export default function TakesClient() {
                     key={topic.id}
                     onClick={() => toggleFollowTopic(topic.id)}
                     className={`px-4 py-3 rounded-lg border text-sm transition ${
-                      isFollowed ? "bg-black text-white border-black" : "bg-zinc-100 border-zinc-400 hover:bg-zinc-50"
+                      isFollowed
+                        ? "bg-black text-white border-black"
+                        : "bg-zinc-100 border-zinc-400 hover:bg-zinc-50"
                     }`}
                   >
                     {topic.name}
@@ -1253,7 +1363,6 @@ export default function TakesClient() {
             Profile
           </button>
 
-          {/* Follow toggle check (hidden for your own takes / not logged in / missing creator) */}
           {userId && activeCreatorId && activeCreatorId !== userId && (
             <button
               onClick={(e) => {
