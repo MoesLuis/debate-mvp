@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -12,9 +12,29 @@ type TrendingTopic = {
 
 type GateMode = "matchmaking" | "scheduled";
 
+/**
+ * Next.js requirement: useSearchParams must be inside a Suspense boundary.
+ * So we isolate it into this tiny component and render it inside <Suspense>.
+ */
+function JoinRoomListener({
+  onJoinRoom,
+}: {
+  onJoinRoom: (roomSlug: string) => void;
+}) {
+  const params = useSearchParams();
+
+  useEffect(() => {
+    const joinRoom = params.get("joinRoom");
+    if (!joinRoom) return;
+    onJoinRoom(joinRoom);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
+
+  return null;
+}
+
 export default function Home() {
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   const [email, setEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
@@ -71,21 +91,6 @@ export default function Home() {
       sub.subscription.unsubscribe();
     };
   }, []);
-
-  /* ---------------- AUTO-GATE: scheduled join from inbox ---------------- */
-  useEffect(() => {
-    const joinRoom = searchParams.get("joinRoom");
-    if (!joinRoom) return;
-
-    // Open the gate for scheduled rooms
-    setPendingRoom(joinRoom);
-    setGateMode("scheduled");
-    setShowGate(true);
-
-    // Clean the URL (so refresh doesn't re-open forever)
-    router.replace("/");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
 
   /* ---------------- REALTIME MATCH DETECT ---------------- */
   useEffect(() => {
@@ -162,7 +167,7 @@ export default function Home() {
   /* ---------------- CONSENT AUTO-CANCEL (only matchmaking; 20s) ---------------- */
   useEffect(() => {
     if (!showGate || !pendingRoom) return;
-    if (gateMode !== "matchmaking") return; // ✅ don't auto-cancel scheduled rooms
+    if (gateMode !== "matchmaking") return; // ✅ do NOT auto-cancel scheduled rooms
 
     const timer = setTimeout(async () => {
       const {
@@ -253,7 +258,7 @@ export default function Home() {
       return;
     }
 
-    // If it's a scheduled room, activate it before entering.
+    // If it’s a scheduled room, activate it before entering.
     if (gateMode === "scheduled") {
       const res = await fetch("/api/activate-match", {
         method: "POST",
@@ -279,9 +284,24 @@ export default function Home() {
     router.push(`/room/${roomSlug}`);
   }
 
+  function openScheduledJoin(roomSlug: string) {
+    // Open the “Before you enter” gate for scheduled joins
+    setPendingRoom(roomSlug);
+    setGateMode("scheduled");
+    setShowGate(true);
+
+    // Clean URL so refresh doesn’t retrigger it
+    router.replace("/");
+  }
+
   /* ---------------- UI ---------------- */
   return (
     <main className="p-6 space-y-6">
+      {/* ✅ REQUIRED: JoinRoomListener uses useSearchParams, so wrap in Suspense */}
+      <Suspense fallback={null}>
+        <JoinRoomListener onJoinRoom={openScheduledJoin} />
+      </Suspense>
+
       <h1 className="text-3xl font-bold">Welcome to Debate.Me</h1>
 
       {/* Sign in card */}
@@ -314,9 +334,7 @@ export default function Home() {
                 Save
               </button>
             </div>
-            {profileMsg && (
-              <p className="text-xs text-zinc-400 mt-1">{profileMsg}</p>
-            )}
+            {profileMsg && <p className="text-xs text-zinc-400 mt-1">{profileMsg}</p>}
           </div>
         )}
       </div>
@@ -361,8 +379,7 @@ export default function Home() {
 
         {finding && (
           <p className="mt-3 text-sm animate-pulse">
-            Looking for someone{" "}
-            {activeTopic ? `debating ${activeTopic}` : "to debate with"}…
+            Looking for someone {activeTopic ? `debating ${activeTopic}` : "to debate with"}…
           </p>
         )}
 
@@ -388,18 +405,15 @@ export default function Home() {
           <div className="max-w-md w-full rounded-lg bg-zinc-950 border border-zinc-800 p-4">
             <h2 className="text-lg font-semibold mb-2">⚠️ Before you enter</h2>
             <p className="text-sm text-zinc-300">
-              Leaving a debate without properly ending it will result in a{" "}
-              <b>5% penalty</b> to your profile score.
+              Leaving a debate without properly ending it will result in a <b>5% penalty</b> to your profile score.
             </p>
 
-            {gateMsg && (
-              <p className="mt-3 text-sm text-red-300">{gateMsg}</p>
-            )}
+            {gateMsg && <p className="mt-3 text-sm text-red-300">{gateMsg}</p>}
 
             <div className="mt-4 flex justify-end gap-2">
               <button
                 onClick={async () => {
-                  // Only cancel matchmaking matches; scheduled should just close the modal.
+                  // Only cancel matchmaking matches; scheduled should just close modal.
                   if (gateMode === "matchmaking" && pendingRoom) {
                     const {
                       data: { session },
