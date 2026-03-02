@@ -1,9 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import TopicSelector from "@/components/TopicSelector";
 
 export default function Profile() {
+  const router = useRouter();
   const [handle, setHandle] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -33,7 +35,17 @@ export default function Profile() {
 
   return (
     <main className="p-6 max-w-md mx-auto space-y-3">
-      <h1 className="text-2xl font-bold">Profile</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Profile</h1>
+
+        <button
+          onClick={() => router.push("/inbox")}
+          className="px-3 py-2 rounded border border-zinc-300 bg-white hover:bg-zinc-50 text-sm"
+        >
+          Inbox
+        </button>
+      </div>
+
       <input
         className="w-full border rounded p-2"
         value={handle}
@@ -41,7 +53,6 @@ export default function Profile() {
         placeholder="Your handle"
       />
 
-      {/* Add this muted caption line here */}
       <p className="text-xs text-[var(--muted)] mt-1">
         This name will appear in the video room.
       </p>
@@ -53,9 +64,10 @@ export default function Profile() {
       >
         Save
       </button>
+
       {msg && <p>{msg}</p>}
-      
-    <TopicSelector />
+
+      <TopicSelector />
     </main>
   );
 }

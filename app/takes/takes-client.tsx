@@ -23,6 +23,9 @@ type TakeRow = {
 
   // When coming from RPC we may get this instead of nested topics join
   topic_name?: string | null;
+
+  // Optional (not always present depending on your RPC)
+  question_id?: number | null;
 };
 
 declare global {
@@ -200,16 +203,81 @@ export default function TakesClient() {
   }, [followed, activeTopicId]);
 
   /* =========================================================================================
+     LIVE INVITES (Phase 8 - Option 1)
+     ========================================================================================= */
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteMsg, setInviteMsg] = useState<string | null>(null);
+  const [opponentHandle, setOpponentHandle] = useState<string | null>(null);
+  const [challengerStance, setChallengerStance] = useState<"in_favor" | "against">("against");
+
+  async function openInviteModal() {
+    if (!activeTake?.id || !activeCreatorId || !activeTopicId) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      alert("Please log in first.");
+      return;
+    }
+
+    if (activeCreatorId === user.id) {
+      alert("You can’t challenge your own take.");
+      return;
+    }
+
+    setInviteMsg(null);
+    setOpponentHandle(null);
+    setInviteOpen(true);
+
+    // Load opponent handle for display
+    const { data: prof } = await supabase
+      .from("profiles")
+      .select("handle")
+      .eq("user_id", activeCreatorId)
+      .maybeSingle();
+
+    if (prof?.handle) setOpponentHandle(prof.handle);
+  }
+
+  async function sendInvite() {
+    if (!activeTake?.id || !activeCreatorId || !activeTopicId) return;
+    if (!userId) {
+      alert("Please log in first.");
+      return;
+    }
+
+    setInviteBusy(true);
+    setInviteMsg(null);
+
+    const payload = {
+      from_user_id: userId,
+      to_user_id: activeCreatorId,
+      take_id: activeTake.id,
+      topic_id: activeTopicId,
+      question_id: (activeTake as any)?.question_id ?? null,
+      creator_stance: activeTake.stance ?? null,
+      challenger_stance: challengerStance,
+      status: "pending",
+    };
+
+    const { error } = await supabase.from("live_debate_invites").insert(payload);
+
+    if (error) {
+      console.warn("invite insert error", error);
+      setInviteMsg(error.message || "Could not send invite.");
+      setInviteBusy(false);
+      return;
+    }
+
+    setInviteMsg("Invite sent ✅ They can accept from their Inbox.");
+    setInviteBusy(false);
+
+    // Auto close after a moment (feels nicer)
+    window.setTimeout(() => setInviteOpen(false), 900);
+  }
+
+  /* =========================================================================================
      WATCH / COMPLETION TRACKING (writes into take_watch_events)
-     -----------------------------------------------------------------------------------------
-     Expected table (you said you want this):
-       take_watch_events:
-         user_id uuid
-         take_id uuid
-         watched_ms int
-         completed bool
-         created_at timestamptz default now()
-     We insert ONE ROW per view session.
      ========================================================================================= */
 
   const watchSessionRef = useRef<{
@@ -246,10 +314,8 @@ export default function TakesClient() {
       take_id: session.takeId,
       watched_ms: Math.max(0, Math.floor(session.watchedMs)),
       completed: !!session.completed,
-      // created_at handled by default
     };
 
-    // Best-effort insert. If it fails, we still mark flushed to avoid spamming retries.
     const { error } = await supabase.from("take_watch_events").insert(payload);
     if (error) {
       console.warn("take_watch_events insert failed", error);
@@ -274,7 +340,6 @@ export default function TakesClient() {
     const v = videoRef.current;
     if (!session || !v) return;
 
-    // Only count time when it's actually playing
     const isPlaying = !v.paused && !v.ended && v.readyState >= 2;
     const now = Date.now();
 
@@ -287,8 +352,6 @@ export default function TakesClient() {
 
     session.lastTickMs = now;
 
-    // Completion heuristic: if we’re basically at the end, mark completed.
-    // (Useful when ended event doesn’t fire reliably with HLS changes.)
     const dur = Number.isFinite(v.duration) ? v.duration : 0;
     if (dur > 0) {
       const pct = v.currentTime / dur;
@@ -296,10 +359,8 @@ export default function TakesClient() {
     }
   }
 
-  // Start a new session when active take changes; flush previous.
   useEffect(() => {
     (async () => {
-      // flush previous session before starting next
       await flushWatchSession("switch");
 
       if (!activeTake?.id) {
@@ -312,7 +373,6 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTake?.id]);
 
-  // Periodic tick while mounted
   useEffect(() => {
     const id = window.setInterval(() => {
       tickWatchSession();
@@ -321,11 +381,9 @@ export default function TakesClient() {
     return () => window.clearInterval(id);
   }, []);
 
-  // On tab hidden -> flush (best effort)
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "hidden") {
-        // mark last tick + flush
         tickWatchSession();
         flushWatchSession("hidden");
       }
@@ -335,7 +393,6 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // On unmount -> flush
   useEffect(() => {
     return () => {
       tickWatchSession();
@@ -450,7 +507,6 @@ export default function TakesClient() {
     let channel: any;
 
     async function init() {
-      // Reset modes
       setViewMode({ kind: "feed" });
       setThreadTakes([]);
       setThreadIndex(0);
@@ -462,7 +518,6 @@ export default function TakesClient() {
 
       await loadNotInterested();
 
-      // keep followed topics set fresh for topic bubble visuals
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -534,7 +589,6 @@ export default function TakesClient() {
       return;
     }
 
-    // Refresh followed topics set so topic bubble state is accurate
     const { data: followedTopicsData } = await supabase
       .from("user_topics")
       .select("topic_id")
@@ -615,7 +669,6 @@ export default function TakesClient() {
     setFeedLoadingMore(false);
   }
 
-  // Auto-load more when near the end (feed only)
   useEffect(() => {
     if (showingThread || showingOriginal) return;
     if (takes.length === 0) return;
@@ -756,7 +809,6 @@ export default function TakesClient() {
       const v = videoRef.current;
       if (!v) return;
 
-      // ensure looping always on
       v.loop = true;
 
       try {
@@ -799,7 +851,6 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTake?.id]);
 
-  // NEW: mark completion reliably when video ends
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -1086,10 +1137,6 @@ export default function TakesClient() {
     router.push(`/takes/record?parentTakeId=${joinRootId}&stance=${stance}`);
   }
 
-  function handleLiveDebate() {
-    alert("Live debate requests are coming next");
-  }
-
   const showShowOriginalButton = !!activeTake?.parent_take_id && !showingOriginal;
 
   /* ---------------- SWIPE / SCROLL (feed only) ---------------- */
@@ -1109,7 +1156,6 @@ export default function TakesClient() {
     if (!activeTake?.id) return;
     if (animatingRef.current) return;
 
-    // IMPORTANT: if user pressed a button/link/etc, do not begin gesture tracking
     if (isInteractiveTarget(e.target)) return;
 
     pointerIdRef.current = e.pointerId;
@@ -1119,8 +1165,6 @@ export default function TakesClient() {
 
     setGestureLock("none");
     setDragging(false);
-    // Do NOT setPointerCapture here — we only capture after threshold + lock,
-    // so clicks on overlays (and video controls) keep working.
   }
 
   function onCardPointerMove(e: React.PointerEvent) {
@@ -1134,19 +1178,16 @@ export default function TakesClient() {
     const dx = e.clientX - start.x;
     const dy = e.clientY - start.y;
 
-    // If we haven't locked yet, wait until meaningful movement before locking
     if (gestureLock === "none") {
       const adx = Math.abs(dx);
       const ady = Math.abs(dy);
 
-      // threshold before we "take over" the pointer (prevents breaking taps/clicks)
       if (adx < 12 && ady < 12) return;
 
       const lock: GestureLock = adx > ady ? "horizontal" : "vertical";
       setGestureLock(lock);
       setDragging(true);
 
-      // only now capture the pointer
       const pid = pointerIdRef.current;
       if (pid != null && !capturedRef.current) {
         try {
@@ -1157,14 +1198,12 @@ export default function TakesClient() {
     }
 
     if (gestureLock === "horizontal") {
-      // Only allow dragging left
       setDragX(Math.min(0, dx));
       setDragY(0);
       return;
     }
 
     if (gestureLock === "vertical") {
-      // Only allow dragging up/down for navigation
       const clamped = Math.max(-420, Math.min(420, dy));
       setDragY(clamped);
       setDragX(0);
@@ -1200,7 +1239,6 @@ export default function TakesClient() {
     const start = swipeStartRef.current;
     const pid = pointerIdRef.current;
 
-    // If we never crossed threshold / never locked => treat as a normal tap/click.
     if (!start || gestureLock === "none") {
       swipeStartRef.current = null;
       pointerIdRef.current = null;
@@ -1217,7 +1255,6 @@ export default function TakesClient() {
     pointerIdRef.current = null;
     pendingGestureRef.current = false;
 
-    // release capture (only if we captured)
     if (capturedRef.current && pid != null) {
       try {
         (e.currentTarget as HTMLDivElement).releasePointerCapture(pid);
@@ -1230,7 +1267,6 @@ export default function TakesClient() {
     const dx = e.clientX - start.x;
     const dy = e.clientY - start.y;
 
-    // Horizontal swipe left => not interested
     if (gestureLock === "horizontal") {
       if (dx < -140 && Math.abs(dy) < 120) {
         dismissActiveTakeLeft();
@@ -1241,7 +1277,6 @@ export default function TakesClient() {
       return;
     }
 
-    // Vertical swipe up/down => next/prev
     if (gestureLock === "vertical") {
       if (dy < -120) {
         setDragX(0);
@@ -1258,19 +1293,16 @@ export default function TakesClient() {
         return;
       }
 
-      // snap back
       setDragY(0);
       setGestureLock("none");
       return;
     }
 
-    // fallback snap
     setDragX(0);
     setDragY(0);
     setGestureLock("none");
   }
 
-  // Mouse wheel scroll (desktop) -> next/prev
   function onCardWheel(e: React.WheelEvent) {
     if (viewMode.kind !== "feed") return;
     if (animatingRef.current) return;
@@ -1291,7 +1323,6 @@ export default function TakesClient() {
     else animateToPrev();
   }
 
-  // Reset gesture state when take changes
   useEffect(() => {
     resetGesture();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1307,6 +1338,64 @@ export default function TakesClient() {
   return (
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
       <TakesTopicsRibbon />
+
+      {/* LIVE INVITE MODAL */}
+      {inviteOpen && activeTake && activeCreatorId && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-lg border border-zinc-300 bg-white p-4">
+            <div className="text-lg font-semibold">Challenge to a live debate</div>
+
+            <div className="mt-2 text-sm text-zinc-700 space-y-1">
+              <div>
+                <span className="font-medium">Opponent:</span>{" "}
+                {opponentHandle ? `@${opponentHandle}` : activeCreatorId.slice(0, 8) + "…"}
+              </div>
+              <div>
+                <span className="font-medium">Topic:</span> {activeTopicName}
+              </div>
+              <div>
+                <span className="font-medium">Their stance:</span> {activeTake.stance ?? "neutral"}
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <label className="block text-sm font-medium">Your stance</label>
+              <select
+                className="mt-1 w-full border border-zinc-300 rounded p-2"
+                value={challengerStance}
+                onChange={(e) => setChallengerStance(e.target.value as any)}
+                disabled={inviteBusy}
+              >
+                <option value="in_favor">In favor</option>
+                <option value="against">Against</option>
+              </select>
+
+              <p className="mt-2 text-xs text-zinc-500">
+                This sends a private invite. They’ll accept/decline from their Inbox.
+              </p>
+            </div>
+
+            {inviteMsg && <div className="mt-3 text-sm text-zinc-800">{inviteMsg}</div>}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setInviteOpen(false)}
+                className="px-4 py-2 rounded border border-zinc-300 bg-white hover:bg-zinc-50"
+                disabled={inviteBusy}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={sendInvite}
+                className="px-4 py-2 rounded bg-black text-white hover:opacity-90 disabled:opacity-60"
+                disabled={inviteBusy}
+              >
+                {inviteBusy ? "Sending…" : "Send invite"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* JOIN PICKER MODAL */}
       {joinPickerOpen && (
@@ -1412,7 +1501,6 @@ export default function TakesClient() {
               {/* Top-left overlay */}
               <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
                 <div className="font-medium flex items-center gap-2">
-                  {/* Topic bubble */}
                   {activeTopicId ? (
                     <button
                       onClick={(e) => {
@@ -1460,38 +1548,6 @@ export default function TakesClient() {
                   </button>
                 )}
               </div>
-
-              {/* Thread empty / loading / error overlays */}
-              {showingThread && !loadingThread && threadTakes.length === 0 && (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">No replies on this side yet.</div>
-                </div>
-              )}
-
-              {showingThread && loadingThread && (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm">Loading thread…</div>
-                </div>
-              )}
-
-              {showingThread && threadError && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="bg-black/60 text-white px-4 py-3 rounded-lg text-sm text-center">
-                    {threadError}
-                    <div className="mt-2">
-                      <button
-                        onClick={() => {
-                          if (viewMode.kind === "thread") openThread(viewMode.rootTakeId, viewMode.stance, viewMode.entryTakeId);
-                        }}
-                        className="px-3 py-1 rounded bg-white/90 text-black text-xs"
-                        data-no-gesture="true"
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
 
               {/* Center-left Back button while browsing thread */}
               {showingThread && (
@@ -1646,9 +1702,9 @@ export default function TakesClient() {
 
         {activeTake?.is_challengeable ? (
           <button
-            onClick={handleLiveDebate}
+            onClick={openInviteModal}
             className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-[11px]"
-            title="Request a live debate (coming next)"
+            title="Challenge to a live debate"
             data-no-gesture="true"
           >
             Live
