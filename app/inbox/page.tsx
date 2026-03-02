@@ -11,11 +11,17 @@ type InviteRow = {
   to_user_id: string;
   topic_id: number | null;
   take_id: string | null;
+  question_id: number | null;
+
   creator_stance: string | null;
   challenger_stance: string | null;
+
   status: string;
   room_slug: string | null;
   responded_at: string | null;
+
+  // Supabase "questions(question)" join usually returns an array
+  questions?: { question: string }[] | null;
 };
 
 export default function InboxPage() {
@@ -31,7 +37,9 @@ export default function InboxPage() {
 
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) {
         router.replace("/login");
         return;
@@ -44,7 +52,9 @@ export default function InboxPage() {
     setMsg(null);
     setLoading(true);
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     if (!user) {
       setLoading(false);
       return;
@@ -52,7 +62,9 @@ export default function InboxPage() {
 
     const { data, error } = await supabase
       .from("live_debate_invites")
-      .select("id, created_at, from_user_id, to_user_id, topic_id, take_id, creator_stance, challenger_stance, status, room_slug, responded_at")
+      .select(
+        "id, created_at, from_user_id, to_user_id, topic_id, take_id, question_id, creator_stance, challenger_stance, status, room_slug, responded_at, questions(question)"
+      )
       .eq("to_user_id", user.id)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -64,16 +76,18 @@ export default function InboxPage() {
       return;
     }
 
-    const rows = (data ?? []) as InviteRow[];
+    // Supabase join typing can be weird; normalize safely
+    const rows = ((data ?? []) as unknown as InviteRow[]).map((r) => ({
+      ...r,
+      questions: Array.isArray((r as any).questions) ? (r as any).questions : (r as any).questions ? [(r as any).questions] : null,
+    }));
+
     setInvites(rows);
 
     // preload handles for senders
-    const senderIds = Array.from(new Set(rows.map(r => r.from_user_id)));
+    const senderIds = Array.from(new Set(rows.map((r) => r.from_user_id)));
     if (senderIds.length) {
-      const { data: profs } = await supabase
-        .from("profiles")
-        .select("user_id, handle")
-        .in("user_id", senderIds);
+      const { data: profs } = await supabase.from("profiles").select("user_id, handle").in("user_id", senderIds);
 
       const map: Record<string, string> = {};
       (profs ?? []).forEach((p: any) => {
@@ -83,12 +97,9 @@ export default function InboxPage() {
     }
 
     // preload topics
-    const topicIds = Array.from(new Set(rows.map(r => r.topic_id).filter((x): x is number => typeof x === "number")));
+    const topicIds = Array.from(new Set(rows.map((r) => r.topic_id).filter((x): x is number => typeof x === "number")));
     if (topicIds.length) {
-      const { data: tops } = await supabase
-        .from("topics")
-        .select("id, name")
-        .in("id", topicIds);
+      const { data: tops } = await supabase.from("topics").select("id, name").in("id", topicIds);
 
       const tmap: Record<number, string> = {};
       (tops ?? []).forEach((t: any) => {
@@ -104,7 +115,6 @@ export default function InboxPage() {
     if (!userId) return;
     load();
 
-    // Realtime: refresh inbox if a new invite arrives
     const ch = supabase
       .channel(`invites-to-${userId}`)
       .on(
@@ -124,7 +134,7 @@ export default function InboxPage() {
     setBusyId(inviteId);
     setMsg(null);
 
-    const ok = window.confirm("Accept this live debate invite? You will enter a room, and leaving early can penalize you.");
+    const ok = window.confirm("Accept this live debate invite? You will enter a room.");
     if (!ok) {
       setBusyId(null);
       return;
@@ -188,11 +198,7 @@ export default function InboxPage() {
         </button>
       </div>
 
-      {msg && (
-        <div className="mt-4 rounded border border-zinc-300 bg-white p-3 text-sm">
-          {msg}
-        </div>
-      )}
+      {msg && <div className="mt-4 rounded border border-zinc-300 bg-white p-3 text-sm">{msg}</div>}
 
       {loading ? (
         <div className="mt-6 text-sm text-zinc-600">Loading invites…</div>
@@ -201,24 +207,42 @@ export default function InboxPage() {
       ) : (
         <div className="mt-6 space-y-3">
           {invites.map((inv) => {
-            const fromHandle = handles[inv.from_user_id] ? `@${handles[inv.from_user_id]}` : inv.from_user_id.slice(0, 8) + "…";
-            const topicName = inv.topic_id != null ? (topics[inv.topic_id] ?? `Topic ${inv.topic_id}`) : "Topic";
+            const fromHandle = handles[inv.from_user_id]
+              ? `@${handles[inv.from_user_id]}`
+              : inv.from_user_id.slice(0, 8) + "…";
+            const topicName = inv.topic_id != null ? topics[inv.topic_id] ?? `Topic ${inv.topic_id}` : "Topic";
             const pending = inv.status === "pending";
+
+            const questionText = inv.questions?.[0]?.question ?? null;
+
+            // ✅ Fixed stance labeling for recipient
+            const yourStance = inv.creator_stance ?? "neutral";
+            const challenger = inv.challenger_stance ?? "unspecified";
 
             return (
               <div key={inv.id} className="rounded-lg border border-zinc-300 bg-zinc-100 p-4">
                 <div className="flex items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <div className="text-sm">
-                      <span className="font-semibold">{fromHandle}</span> invited you to a live debate
+                      <span className="font-semibold">{fromHandle}</span> challenged you to a live debate
                     </div>
+
                     <div className="text-xs text-zinc-600 mt-1">
                       Topic: <span className="font-medium">{topicName}</span>
                     </div>
-                    <div className="text-xs text-zinc-600 mt-1">
-                      Their stance: <span className="font-medium">{inv.creator_stance ?? "neutral"}</span> • Your stance:{" "}
-                      <span className="font-medium">{inv.challenger_stance ?? "unspecified"}</span>
+
+                    {questionText && (
+                      <div className="mt-2 rounded border border-zinc-200 bg-white p-2 text-sm text-zinc-800">
+                        <div className="text-[11px] uppercase tracking-wide text-zinc-500">Question</div>
+                        <div className="mt-1">{questionText}</div>
+                      </div>
+                    )}
+
+                    <div className="text-xs text-zinc-600 mt-2">
+                      Your stance: <span className="font-medium">{yourStance}</span> • Challenger stance:{" "}
+                      <span className="font-medium">{challenger}</span>
                     </div>
+
                     <div className="text-[11px] text-zinc-500 mt-2">
                       {new Date(inv.created_at).toLocaleString()} • Status: {inv.status}
                     </div>

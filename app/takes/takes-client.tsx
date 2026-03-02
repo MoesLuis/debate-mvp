@@ -23,9 +23,6 @@ type TakeRow = {
 
   // When coming from RPC we may get this instead of nested topics join
   topic_name?: string | null;
-
-  // Optional (not always present depending on your RPC)
-  question_id?: number | null;
 };
 
 declare global {
@@ -159,7 +156,6 @@ export default function TakesClient() {
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const capturedRef = useRef(false);
 
-  // we only start a gesture AFTER threshold and after deciding lock
   const pendingGestureRef = useRef(false);
   const [gestureLock, setGestureLock] = useState<GestureLock>("none");
 
@@ -167,12 +163,10 @@ export default function TakesClient() {
   const [dragY, setDragY] = useState(0);
   const [dragging, setDragging] = useState(false);
 
-  // slide animation when switching videos
   const animatingRef = useRef(false);
   const [animating, setAnimating] = useState(false);
   const [animateTransition, setAnimateTransition] = useState<"none" | "ease">("ease");
 
-  // wheel cooldown (desktop)
   const wheelLockRef = useRef(false);
   const wheelTimerRef = useRef<number | null>(null);
 
@@ -209,12 +203,39 @@ export default function TakesClient() {
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
   const [opponentHandle, setOpponentHandle] = useState<string | null>(null);
-  const [challengerStance, setChallengerStance] = useState<"in_favor" | "against">("against");
+
+  // IMPORTANT: use same stance values as your app: "pro" | "against"
+  const [challengerStance, setChallengerStance] = useState<"pro" | "against">("against");
+
+  const [inviteQuestionText, setInviteQuestionText] = useState<string | null>(null);
+  const [inviteQuestionId, setInviteQuestionId] = useState<number | null>(null);
+
+  async function fetchTakeQuestionForInvite(takeId: string) {
+    // Fetch question info directly from takes -> questions
+    const { data, error } = await supabase
+      .from("takes")
+      .select("question_id, questions(question)")
+      .eq("id", takeId)
+      .maybeSingle();
+
+    if (error) {
+      console.warn("fetchTakeQuestionForInvite error", error);
+      return { questionId: null as number | null, questionText: null as string | null };
+    }
+
+    const questionId = (data as any)?.question_id ?? null;
+    const questionText = (data as any)?.questions?.question ?? null; // supabase may return object for single join
+
+    return { questionId, questionText };
+  }
 
   async function openInviteModal() {
     if (!activeTake?.id || !activeCreatorId || !activeTopicId) return;
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
     if (!user) {
       alert("Please log in first.");
       return;
@@ -227,6 +248,8 @@ export default function TakesClient() {
 
     setInviteMsg(null);
     setOpponentHandle(null);
+    setInviteQuestionText(null);
+    setInviteQuestionId(null);
     setInviteOpen(true);
 
     // Load opponent handle for display
@@ -237,11 +260,21 @@ export default function TakesClient() {
       .maybeSingle();
 
     if (prof?.handle) setOpponentHandle(prof.handle);
+
+    // Load question text for display + include question_id in invite
+    const q = await fetchTakeQuestionForInvite(activeTake.id);
+    setInviteQuestionId(q.questionId);
+    setInviteQuestionText(q.questionText);
   }
 
   async function sendInvite() {
     if (!activeTake?.id || !activeCreatorId || !activeTopicId) return;
-    if (!userId) {
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
       alert("Please log in first.");
       return;
     }
@@ -249,14 +282,26 @@ export default function TakesClient() {
     setInviteBusy(true);
     setInviteMsg(null);
 
+    // Ensure question_id/text loaded (even if modal opened before data came back)
+    let qid = inviteQuestionId;
+    let qtext = inviteQuestionText;
+
+    if (qid == null && activeTake?.id) {
+      const q = await fetchTakeQuestionForInvite(activeTake.id);
+      qid = q.questionId;
+      qtext = q.questionText;
+      setInviteQuestionId(q.questionId);
+      setInviteQuestionText(q.questionText);
+    }
+
     const payload = {
-      from_user_id: userId,
+      from_user_id: user.id,
       to_user_id: activeCreatorId,
       take_id: activeTake.id,
       topic_id: activeTopicId,
-      question_id: (activeTake as any)?.question_id ?? null,
-      creator_stance: activeTake.stance ?? null,
-      challenger_stance: challengerStance,
+      question_id: qid, // used for inbox join display
+      creator_stance: activeTake.stance ?? null, // stance of the TAKE CREATOR (recipient)
+      challenger_stance: challengerStance, // stance of the CHALLENGER (sender)
       status: "pending",
     };
 
@@ -269,10 +314,9 @@ export default function TakesClient() {
       return;
     }
 
-    setInviteMsg("Invite sent ✅ They can accept from their Inbox.");
+    setInviteMsg("Invite sent ✅ They can accept/decline from their Inbox.");
     setInviteBusy(false);
 
-    // Auto close after a moment (feels nicer)
     window.setTimeout(() => setInviteOpen(false), 900);
   }
 
@@ -294,7 +338,6 @@ export default function TakesClient() {
     if (!session) return;
     if (session.flushed) return;
 
-    // Don’t write tiny accidental views (< 750ms)
     if (session.watchedMs < 750 && !session.completed) {
       session.flushed = true;
       return;
@@ -1356,6 +1399,13 @@ export default function TakesClient() {
               <div>
                 <span className="font-medium">Their stance:</span> {activeTake.stance ?? "neutral"}
               </div>
+
+              {inviteQuestionText && (
+                <div className="mt-2 rounded border border-zinc-200 bg-zinc-50 p-2 text-sm text-zinc-800">
+                  <div className="text-[11px] uppercase tracking-wide text-zinc-500">Question</div>
+                  <div className="mt-1">{inviteQuestionText}</div>
+                </div>
+              )}
             </div>
 
             <div className="mt-4">
@@ -1366,7 +1416,7 @@ export default function TakesClient() {
                 onChange={(e) => setChallengerStance(e.target.value as any)}
                 disabled={inviteBusy}
               >
-                <option value="in_favor">In favor</option>
+                <option value="pro">In favor</option>
                 <option value="against">Against</option>
               </select>
 
@@ -1467,7 +1517,6 @@ export default function TakesClient() {
             onWheel={onCardWheel}
             style={{ overscrollBehavior: "contain" }}
           >
-            {/* Sliding layer */}
             <div
               className="absolute inset-0"
               style={{
@@ -1498,7 +1547,6 @@ export default function TakesClient() {
                 </div>
               )}
 
-              {/* Top-left overlay */}
               <div className="absolute left-4 top-4 bg-black/60 text-white px-3 py-2 rounded-lg text-sm">
                 <div className="font-medium flex items-center gap-2">
                   {activeTopicId ? (
@@ -1549,7 +1597,6 @@ export default function TakesClient() {
                 )}
               </div>
 
-              {/* Center-left Back button while browsing thread */}
               {showingThread && (
                 <button
                   onClick={backToEntryInThread}
@@ -1561,7 +1608,6 @@ export default function TakesClient() {
                 </button>
               )}
 
-              {/* Prev/Next (desktop affordance; swipe/scroll also works now) */}
               {!showingOriginal && (
                 <div className="absolute left-4 bottom-4 flex gap-2">
                   <button
@@ -1583,13 +1629,11 @@ export default function TakesClient() {
                 </div>
               )}
 
-              {/* Subtle “loading more” */}
               {viewMode.kind === "feed" && feedLoadingMore && (
                 <div className="absolute right-4 bottom-4 bg-black/60 text-white px-3 py-2 rounded text-xs">Loading more…</div>
               )}
             </div>
 
-            {/* Background hint revealed while dragging left */}
             {viewMode.kind === "feed" && (
               <div className="absolute inset-0 flex items-center justify-end pr-6 pointer-events-none">
                 <div className="bg-black/60 text-white px-4 py-2 rounded-lg text-sm">Not interested</div>
@@ -1599,7 +1643,6 @@ export default function TakesClient() {
         )}
       </div>
 
-      {/* EXPLORE: topic discovery grid */}
       {!isFollowingTab && (
         <div className="mt-6">
           <h2 className="text-lg font-semibold mb-4">Discover Topics</h2>
@@ -1629,7 +1672,6 @@ export default function TakesClient() {
         </div>
       )}
 
-      {/* Right action rail */}
       <div className="fixed right-6 top-1/2 -translate-y-1/2 flex flex-col gap-3">
         <button
           onClick={() => {
@@ -1643,7 +1685,6 @@ export default function TakesClient() {
           {showingOriginal ? "Back" : showingThread ? "Back" : "Topic"}
         </button>
 
-        {/* Profile button -> goes to creator profile; with green follow check */}
         <div className="relative w-14 h-14">
           <button onClick={goToCreatorProfile} className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs" data-no-gesture="true">
             Profile
