@@ -496,7 +496,7 @@ export default function InboxPage() {
 
             {isScheduled && inv.room_slug ? (
               <button
-                onClick={() => router.push(`/room/${inv.room_slug}`)}
+                onClick={() => router.push(`/?joinRoom=${inv.room_slug}`)}
                 className="px-3 py-2 rounded bg-zinc-900 text-white hover:opacity-90 text-sm"
               >
                 Open room

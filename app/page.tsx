@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type TrendingTopic = {
@@ -9,7 +10,12 @@ type TrendingTopic = {
   count: number;
 };
 
+type GateMode = "matchmaking" | "scheduled";
+
 export default function Home() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [email, setEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
 
@@ -28,6 +34,9 @@ export default function Home() {
   // 🔒 Consent gate state
   const [showGate, setShowGate] = useState(false);
   const [pendingRoom, setPendingRoom] = useState<string | null>(null);
+  const [gateMode, setGateMode] = useState<GateMode>("matchmaking");
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateMsg, setGateMsg] = useState<string | null>(null);
 
   /* ---------------- AUTH + PROFILE ---------------- */
   useEffect(() => {
@@ -62,6 +71,21 @@ export default function Home() {
       sub.subscription.unsubscribe();
     };
   }, []);
+
+  /* ---------------- AUTO-GATE: scheduled join from inbox ---------------- */
+  useEffect(() => {
+    const joinRoom = searchParams.get("joinRoom");
+    if (!joinRoom) return;
+
+    // Open the gate for scheduled rooms
+    setPendingRoom(joinRoom);
+    setGateMode("scheduled");
+    setShowGate(true);
+
+    // Clean the URL (so refresh doesn't re-open forever)
+    router.replace("/");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   /* ---------------- REALTIME MATCH DETECT ---------------- */
   useEffect(() => {
@@ -135,12 +159,16 @@ export default function Home() {
     };
   }, []);
 
-  /* ---------------- CONSENT AUTO-CANCEL (20s) ---------------- */
+  /* ---------------- CONSENT AUTO-CANCEL (only matchmaking; 20s) ---------------- */
   useEffect(() => {
     if (!showGate || !pendingRoom) return;
+    if (gateMode !== "matchmaking") return; // ✅ don't auto-cancel scheduled rooms
 
     const timer = setTimeout(async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
       if (session?.access_token) {
         await fetch("/api/cancel-match", {
           method: "POST",
@@ -158,7 +186,7 @@ export default function Home() {
     }, 20000);
 
     return () => clearTimeout(timer);
-  }, [showGate, pendingRoom]);
+  }, [showGate, pendingRoom, gateMode]);
 
   /* ---------------- ACTIONS ---------------- */
   async function signOut() {
@@ -185,7 +213,10 @@ export default function Home() {
     setMatchSlug(null);
     setActiveTopic(topicName ?? null);
 
-    const { data: { session } } = await supabase.auth.getSession();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
     if (!session?.access_token) {
       setFindMsg("Not signed in.");
       setFinding(false);
@@ -206,6 +237,46 @@ export default function Home() {
     else if (!body?.match) setFindMsg("Searching… waiting for another debater.");
 
     setFinding(false);
+  }
+
+  async function acceptGateAndJoin(roomSlug: string) {
+    setGateBusy(true);
+    setGateMsg(null);
+
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session?.access_token) {
+      setGateMsg("Not signed in.");
+      setGateBusy(false);
+      return;
+    }
+
+    // If it's a scheduled room, activate it before entering.
+    if (gateMode === "scheduled") {
+      const res = await fetch("/api/activate-match", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ roomSlug }),
+      });
+
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setGateMsg(body?.error || "Could not activate match.");
+        setGateBusy(false);
+        return;
+      }
+    }
+
+    setShowGate(false);
+    setPendingRoom(null);
+    setGateBusy(false);
+
+    router.push(`/room/${roomSlug}`);
   }
 
   /* ---------------- UI ---------------- */
@@ -278,7 +349,10 @@ export default function Home() {
         <h2 className="text-lg font-semibold mb-2">Find a debating partner</h2>
 
         <button
-          onClick={() => callFindPartner()}
+          onClick={() => {
+            setGateMode("matchmaking");
+            callFindPartner();
+          }}
           disabled={finding}
           className="rounded bg-emerald-600 px-4 py-2 text-white"
         >
@@ -298,6 +372,7 @@ export default function Home() {
           <button
             onClick={() => {
               setPendingRoom(matchSlug);
+              setGateMode("matchmaking");
               setShowGate(true);
             }}
             className="inline-block mt-3 rounded bg-zinc-800 text-white px-4 py-2"
@@ -317,11 +392,19 @@ export default function Home() {
               <b>5% penalty</b> to your profile score.
             </p>
 
+            {gateMsg && (
+              <p className="mt-3 text-sm text-red-300">{gateMsg}</p>
+            )}
+
             <div className="mt-4 flex justify-end gap-2">
               <button
                 onClick={async () => {
-                  if (pendingRoom) {
-                    const { data: { session } } = await supabase.auth.getSession();
+                  // Only cancel matchmaking matches; scheduled should just close the modal.
+                  if (gateMode === "matchmaking" && pendingRoom) {
+                    const {
+                      data: { session },
+                    } = await supabase.auth.getSession();
+
                     if (session?.access_token) {
                       await fetch("/api/cancel-match", {
                         method: "POST",
@@ -339,15 +422,18 @@ export default function Home() {
                   setMatchSlug(null);
                 }}
                 className="rounded bg-zinc-900 px-3 py-2"
+                disabled={gateBusy}
               >
                 Cancel
               </button>
-              <a
-                href={`/room/${pendingRoom}`}
+
+              <button
+                onClick={() => acceptGateAndJoin(pendingRoom)}
                 className="rounded bg-emerald-600 px-4 py-2 text-white"
+                disabled={gateBusy}
               >
-                I accept ✅
-              </a>
+                {gateBusy ? "Entering…" : "I accept ✅"}
+              </button>
             </div>
           </div>
         </div>
