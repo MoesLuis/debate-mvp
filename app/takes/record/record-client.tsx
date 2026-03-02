@@ -15,6 +15,8 @@ function normalizeStance(s: string | null): "neutral" | "pro" | "against" {
   return "neutral";
 }
 
+const MAX_SECONDS = 60;
+
 export default function RecordTakeClient() {
   const router = useRouter();
   const params = useSearchParams();
@@ -34,6 +36,25 @@ export default function RecordTakeClient() {
   const [recording, setRecording] = useState(false);
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  // --- Time limit tracking ---
+  const recordStartMsRef = useRef<number | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const [elapsedSec, setElapsedSec] = useState(0);
+
+  function clearTimer() {
+    if (timerRef.current != null) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  function computeDurationSeconds(): number {
+    const start = recordStartMsRef.current;
+    if (!start) return 0;
+    const ms = Date.now() - start;
+    return Math.max(0, Math.min(MAX_SECONDS, Math.round(ms / 1000)));
+  }
 
   // Data state
   const [topics, setTopics] = useState<FollowedTopic[]>([]);
@@ -58,13 +79,6 @@ export default function RecordTakeClient() {
     setStance(normalizeStance(stanceParam));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stanceParam]);
-
-  useEffect(() => {
-    // Replies default: still allowed to be challengeable per your new rule
-    // (so do NOT force false anymore)
-    // But we DO lock topic/question.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isReply, parentTakeIdParam]);
 
   useEffect(() => {
     loadFollowedTopics();
@@ -230,6 +244,10 @@ export default function RecordTakeClient() {
   }
 
   function cleanupMedia() {
+    clearTimer();
+    recordStartMsRef.current = null;
+    setElapsedSec(0);
+
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
@@ -250,6 +268,11 @@ export default function RecordTakeClient() {
     setVideoBlob(null);
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
+
+    // reset timing
+    clearTimer();
+    recordStartMsRef.current = null;
+    setElapsedSec(0);
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -272,6 +295,8 @@ export default function RecordTakeClient() {
       };
 
       recorder.onstop = () => {
+        clearTimer();
+
         const blob = new Blob(chunksRef.current, {
           type: recorder.mimeType || "video/webm",
         });
@@ -283,11 +308,30 @@ export default function RecordTakeClient() {
           streamRef.current.getTracks().forEach((t) => t.stop());
           streamRef.current = null;
         }
+
+        const dur = computeDurationSeconds();
+        setStatus(`Recording stopped. Duration: ${dur}s. Preview below.`);
       };
 
       recorder.start();
       setRecording(true);
+
+      // start timer + auto stop
+      recordStartMsRef.current = Date.now();
       setStatus("Recording…");
+
+      timerRef.current = window.setInterval(() => {
+        const start = recordStartMsRef.current;
+        if (!start) return;
+
+        const sec = Math.floor((Date.now() - start) / 1000);
+        setElapsedSec(Math.min(MAX_SECONDS, sec));
+
+        if (sec >= MAX_SECONDS) {
+          // auto stop at 60s
+          stopRecording();
+        }
+      }, 250);
     } catch (e) {
       console.error(e);
       setStatus("Could not access camera/microphone. Check browser permissions.");
@@ -300,7 +344,6 @@ export default function RecordTakeClient() {
 
     recorderRef.current.stop();
     setRecording(false);
-    setStatus("Recording stopped. Preview below.");
   }
 
   async function uploadToMux() {
@@ -315,6 +358,13 @@ export default function RecordTakeClient() {
 
     if (!session) {
       setStatus("Not logged in.");
+      setBusy(false);
+      return;
+    }
+
+    const durationSeconds = Math.max(1, computeDurationSeconds() || 0);
+    if (durationSeconds > MAX_SECONDS) {
+      setStatus(`Too long. Max is ${MAX_SECONDS}s.`);
       setBusy(false);
       return;
     }
@@ -334,7 +384,8 @@ export default function RecordTakeClient() {
         questionId,
         stance,
         parentTakeId: normalizedParentTakeId || null,
-        isChallengeable, // per your rule: EVERY take (root or reply) can be challengeable
+        isChallengeable,
+        durationSeconds,
       }),
     });
 
@@ -380,6 +431,8 @@ export default function RecordTakeClient() {
 
     setTimeout(() => router.push("/takes"), 900);
   }
+
+  const remaining = Math.max(0, MAX_SECONDS - elapsedSec);
 
   return (
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
@@ -455,9 +508,7 @@ export default function RecordTakeClient() {
               <label className="block text-sm font-medium">Stance</label>
               <select
                 value={stance}
-                onChange={(e) =>
-                  setStance(e.target.value as "neutral" | "pro" | "against")
-                }
+                onChange={(e) => setStance(e.target.value as "neutral" | "pro" | "against")}
                 className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm"
               >
                 <option value="neutral">Neutral</option>
@@ -518,12 +569,28 @@ export default function RecordTakeClient() {
             >
               Upload to Mux
             </button>
+
+            {/* Countdown */}
+            <div className="ml-auto text-sm text-zinc-700">
+              {recording ? (
+                <span className="font-medium">
+                  {elapsedSec}s / {MAX_SECONDS}s{" "}
+                  <span className="opacity-70">(left {remaining}s)</span>
+                </span>
+              ) : (
+                <span className="opacity-70">Max {MAX_SECONDS}s</span>
+              )}
+            </div>
           </div>
 
           {status && <p className="mt-3 text-sm text-zinc-700">{status}</p>}
 
           <div className="mt-4">
-            <div className="text-sm font-medium mb-2">Preview</div>
+            <div className="flex items-baseline gap-2 mb-2">
+              <div className="text-sm font-medium">Preview</div>
+              <div className="text-xs text-zinc-500">Max {MAX_SECONDS}s</div>
+            </div>
+
             {previewUrl ? (
               <video
                 src={previewUrl}

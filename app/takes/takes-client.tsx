@@ -20,6 +20,9 @@ type TakeRow = {
   parent_take_id?: string | null;
   is_challengeable?: boolean | null;
   topics?: { name: string }[] | null;
+
+  // When coming from RPC we may get this instead of nested topics join
+  topic_name?: string | null;
 };
 
 declare global {
@@ -104,9 +107,6 @@ export default function TakesClient() {
 
   const [userId, setUserId] = useState<string | null>(null);
 
-  // Who I follow (for Following tab feed filtering)
-  const [followingUserIds, setFollowingUserIds] = useState<string[]>([]);
-
   // Feed takes (root + responses)
   const [takes, setTakes] = useState<TakeRow[]>([]);
   const [loadingFeed, setLoadingFeed] = useState(false);
@@ -190,7 +190,7 @@ export default function TakesClient() {
     return activeTake.parent_take_id ?? activeTake.id;
   }, [activeTake]);
 
-  const activeTopicName = activeTake?.topics?.[0]?.name ?? "Topic";
+  const activeTopicName = activeTake?.topics?.[0]?.name ?? activeTake?.topic_name ?? "Topic";
   const activeTopicId = activeTake?.topic_id ?? null;
   const activeCreatorId = activeTake?.user_id ?? null;
 
@@ -198,6 +198,151 @@ export default function TakesClient() {
     if (!activeTopicId) return false;
     return followed.has(activeTopicId);
   }, [followed, activeTopicId]);
+
+  /* =========================================================================================
+     WATCH / COMPLETION TRACKING (writes into take_watch_events)
+     -----------------------------------------------------------------------------------------
+     Expected table (you said you want this):
+       take_watch_events:
+         user_id uuid
+         take_id uuid
+         watched_ms int
+         completed bool
+         created_at timestamptz default now()
+     We insert ONE ROW per view session.
+     ========================================================================================= */
+
+  const watchSessionRef = useRef<{
+    takeId: string;
+    startedAtMs: number;
+    lastTickMs: number;
+    watchedMs: number;
+    completed: boolean;
+    flushed: boolean;
+  } | null>(null);
+
+  async function flushWatchSession(reason: "switch" | "unmount" | "hidden" | "ended") {
+    const session = watchSessionRef.current;
+    if (!session) return;
+    if (session.flushed) return;
+
+    // Don’t write tiny accidental views (< 750ms)
+    if (session.watchedMs < 750 && !session.completed) {
+      session.flushed = true;
+      return;
+    }
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      session.flushed = true;
+      return;
+    }
+
+    const payload = {
+      user_id: user.id,
+      take_id: session.takeId,
+      watched_ms: Math.max(0, Math.floor(session.watchedMs)),
+      completed: !!session.completed,
+      // created_at handled by default
+    };
+
+    // Best-effort insert. If it fails, we still mark flushed to avoid spamming retries.
+    const { error } = await supabase.from("take_watch_events").insert(payload);
+    if (error) {
+      console.warn("take_watch_events insert failed", error);
+    }
+
+    session.flushed = true;
+  }
+
+  function startWatchSession(takeId: string) {
+    watchSessionRef.current = {
+      takeId,
+      startedAtMs: Date.now(),
+      lastTickMs: Date.now(),
+      watchedMs: 0,
+      completed: false,
+      flushed: false,
+    };
+  }
+
+  function tickWatchSession() {
+    const session = watchSessionRef.current;
+    const v = videoRef.current;
+    if (!session || !v) return;
+
+    // Only count time when it's actually playing
+    const isPlaying = !v.paused && !v.ended && v.readyState >= 2;
+    const now = Date.now();
+
+    if (isPlaying) {
+      const delta = now - session.lastTickMs;
+      if (delta > 0 && delta < 5000) {
+        session.watchedMs += delta;
+      }
+    }
+
+    session.lastTickMs = now;
+
+    // Completion heuristic: if we’re basically at the end, mark completed.
+    // (Useful when ended event doesn’t fire reliably with HLS changes.)
+    const dur = Number.isFinite(v.duration) ? v.duration : 0;
+    if (dur > 0) {
+      const pct = v.currentTime / dur;
+      if (pct >= 0.98) session.completed = true;
+    }
+  }
+
+  // Start a new session when active take changes; flush previous.
+  useEffect(() => {
+    (async () => {
+      // flush previous session before starting next
+      await flushWatchSession("switch");
+
+      if (!activeTake?.id) {
+        watchSessionRef.current = null;
+        return;
+      }
+
+      startWatchSession(activeTake.id);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTake?.id]);
+
+  // Periodic tick while mounted
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      tickWatchSession();
+    }, 500);
+
+    return () => window.clearInterval(id);
+  }, []);
+
+  // On tab hidden -> flush (best effort)
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "hidden") {
+        // mark last tick + flush
+        tickWatchSession();
+        flushWatchSession("hidden");
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // On unmount -> flush
+  useEffect(() => {
+    return () => {
+      tickWatchSession();
+      flushWatchSession("unmount");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ---------------- USER ---------------- */
   useEffect(() => {
@@ -254,7 +399,10 @@ export default function TakesClient() {
 
     const { data: topicsData } = await supabase.from("topics").select("id, name").order("name");
 
-    const { data: followedData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
+    const { data: followedData } = await supabase
+      .from("user_topics")
+      .select("topic_id")
+      .eq("user_id", user.id);
 
     if (topicsData) {
       setAllTopics(
@@ -297,35 +445,7 @@ export default function TakesClient() {
     }
   }
 
-  /* ---------------- FOLLOWING USERS (for Following tab feed) ---------------- */
-  async function loadFollowingUsers() {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      setFollowingUserIds([]);
-      return [];
-    }
-
-    const { data, error } = await supabase
-      .from("user_follow_users")
-      .select("following_id")
-      .eq("follower_id", user.id);
-
-    if (error) {
-      console.warn("Failed to load following users", error);
-      setFollowingUserIds([user.id]); // fallback: show self only
-      return [user.id];
-    }
-
-    const ids = (data ?? []).map((r: any) => String(r.following_id)).filter(Boolean);
-    const finalIds = Array.from(new Set([user.id, ...ids])); // include self
-    setFollowingUserIds(finalIds);
-    return finalIds;
-  }
-
-  /* ---------------- FEED LOADERS ---------------- */
+  /* ---------------- FEED LOADERS (RPC) ---------------- */
   useEffect(() => {
     let channel: any;
 
@@ -347,7 +467,10 @@ export default function TakesClient() {
         data: { user },
       } = await supabase.auth.getUser();
       if (user) {
-        const { data: followedData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
+        const { data: followedData } = await supabase
+          .from("user_topics")
+          .select("topic_id")
+          .eq("user_id", user.id);
         setFollowed(new Set<number>((followedData ?? []).map((r: any) => Number(r.topic_id))));
       }
 
@@ -382,33 +505,19 @@ export default function TakesClient() {
   }, [isFollowingTab]);
 
   function normalizeTopicsField(r: any): TakeRow {
+    const topicsNormalized =
+      Array.isArray(r.topics) ? r.topics : r.topics ? [r.topics] : r.topic_name ? [{ name: r.topic_name }] : null;
+
     return {
       ...(r as TakeRow),
-      topics: Array.isArray(r.topics) ? r.topics : r.topics ? [r.topics] : null,
+      topics: topicsNormalized,
     };
   }
 
-  async function buildFeedBaseQuery(filterUserIds: string[] | null) {
-    let q = supabase
-      .from("takes")
-      .select("id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)")
-      .eq("status", "ready")
-      .order("created_at", { ascending: false })
-      .limit(50);
-
-    if (filterUserIds && filterUserIds.length > 0) {
-      q = q.in("user_id", filterUserIds);
-    }
-
-    if (notInterestedIds.size > 0) {
-      const ids = Array.from(notInterestedIds)
-        .slice(0, 1000)
-        .map((id) => `"${id}"`)
-        .join(",");
-      q = q.not("id", "in", `(${ids})`);
-    }
-
-    return q;
+  function applyNotInterestedFilter(rows: TakeRow[]) {
+    if (notInterestedIds.size === 0) return rows;
+    const blocked = notInterestedIds;
+    return rows.filter((t) => !blocked.has(String(t.id)));
   }
 
   async function loadFeedFirstPage() {
@@ -426,41 +535,38 @@ export default function TakesClient() {
     }
 
     // Refresh followed topics set so topic bubble state is accurate
-    const { data: followedTopicsData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
+    const { data: followedTopicsData } = await supabase
+      .from("user_topics")
+      .select("topic_id")
+      .eq("user_id", user.id);
     setFollowed(new Set<number>((followedTopicsData ?? []).map((r: any) => Number(r.topic_id))));
 
-    // Following tab: only creators you follow (plus yourself)
-    let filterUserIds: string[] | null = null;
-    if (isFollowingTab) {
-      filterUserIds = await loadFollowingUsers();
-      if (!filterUserIds || filterUserIds.length === 0) {
-        setTakes([]);
-        setLoadingFeed(false);
-        return;
-      }
-    } else {
-      filterUserIds = null;
-      setFollowingUserIds([]);
-    }
+    const p_tab = isFollowingTab ? "following" : "explore";
+    const p_cursor = null;
+    const p_limit = 50;
 
-    const q = await buildFeedBaseQuery(filterUserIds);
-    const { data, error } = await q;
+    const { data, error } = await supabase.rpc("get_ranked_feed", {
+      p_tab,
+      p_cursor,
+      p_limit,
+    });
 
     if (error) {
+      console.error("get_ranked_feed error", error);
       setFeedError(isFollowingTab ? "Could not load following feed." : "Could not load explore feed.");
       setTakes([]);
       setLoadingFeed(false);
       return;
     }
 
-    const rows = ((data ?? []) as any[]).map(normalizeTopicsField);
+    const rows = applyNotInterestedFilter(((data ?? []) as any[]).map(normalizeTopicsField));
 
     setTakes(rows);
     setActiveIndex(0);
 
     const last = rows[rows.length - 1];
     setFeedCursorCreatedAt(last?.created_at ?? null);
-    setFeedHasMore(rows.length >= 50);
+    setFeedHasMore(rows.length >= p_limit);
     setLoadingFeed(false);
   }
 
@@ -478,45 +584,23 @@ export default function TakesClient() {
       return;
     }
 
-    let filterUserIds: string[] | null = null;
+    const p_tab = isFollowingTab ? "following" : "explore";
+    const p_cursor = feedCursorCreatedAt;
+    const p_limit = 50;
 
-    if (isFollowingTab) {
-      const ids = followingUserIds.length > 0 ? followingUserIds : await loadFollowingUsers();
-      filterUserIds = ids;
-      if (!filterUserIds || filterUserIds.length === 0) {
-        setFeedHasMore(false);
-        setFeedLoadingMore(false);
-        return;
-      }
-    }
-
-    let q = supabase
-      .from("takes")
-      .select("id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)")
-      .eq("status", "ready")
-      .lt("created_at", feedCursorCreatedAt)
-      .order("created_at", { ascending: false })
-      .limit(50);
-
-    if (filterUserIds && filterUserIds.length > 0) q = q.in("user_id", filterUserIds);
-
-    if (notInterestedIds.size > 0) {
-      const ids = Array.from(notInterestedIds)
-        .slice(0, 1000)
-        .map((id) => `"${id}"`)
-        .join(",");
-      q = q.not("id", "in", `(${ids})`);
-    }
-
-    const { data, error } = await q;
+    const { data, error } = await supabase.rpc("get_ranked_feed", {
+      p_tab,
+      p_cursor,
+      p_limit,
+    });
 
     if (error) {
-      console.error("load more error", error);
+      console.error("get_ranked_feed load more error", error);
       setFeedLoadingMore(false);
       return;
     }
 
-    const rows = ((data ?? []) as any[]).map(normalizeTopicsField);
+    const rows = applyNotInterestedFilter(((data ?? []) as any[]).map(normalizeTopicsField));
 
     setTakes((prev) => {
       const seen = new Set(prev.map((t) => t.id));
@@ -527,7 +611,7 @@ export default function TakesClient() {
 
     const last = rows[rows.length - 1];
     setFeedCursorCreatedAt(last?.created_at ?? feedCursorCreatedAt);
-    setFeedHasMore(rows.length >= 50);
+    setFeedHasMore(rows.length >= p_limit);
     setFeedLoadingMore(false);
   }
 
@@ -715,6 +799,23 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTake?.id]);
 
+  // NEW: mark completion reliably when video ends
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+
+    const onEnded = () => {
+      const s = watchSessionRef.current;
+      if (s) s.completed = true;
+      tickWatchSession();
+      flushWatchSession("ended");
+    };
+
+    v.addEventListener("ended", onEnded);
+    return () => v.removeEventListener("ended", onEnded);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTake?.id]);
+
   /* ---------------- NAV (feed + thread) ---------------- */
   function nextRaw() {
     if (showingOriginal) return;
@@ -827,7 +928,10 @@ export default function TakesClient() {
     async function loadReactions() {
       if (!activeTake?.id) return;
 
-      const { count } = await supabase.from("take_reactions").select("take_id", { count: "exact", head: true }).eq("take_id", activeTake.id);
+      const { count } = await supabase
+        .from("take_reactions")
+        .select("take_id", { count: "exact", head: true })
+        .eq("take_id", activeTake.id);
 
       setLikeCount(count ?? 0);
 
@@ -862,7 +966,11 @@ export default function TakesClient() {
 
     try {
       if (liked) {
-        const { error } = await supabase.from("take_reactions").delete().eq("take_id", activeTake.id).eq("user_id", user.id);
+        const { error } = await supabase
+          .from("take_reactions")
+          .delete()
+          .eq("take_id", activeTake.id)
+          .eq("user_id", user.id);
 
         if (!error) {
           setLiked(false);
@@ -924,7 +1032,11 @@ export default function TakesClient() {
     setFollowUserBusy(true);
     try {
       if (isFollowingCreator) {
-        const { error } = await supabase.from("user_follow_users").delete().eq("follower_id", userId).eq("following_id", targetUserId);
+        const { error } = await supabase
+          .from("user_follow_users")
+          .delete()
+          .eq("follower_id", userId)
+          .eq("following_id", targetUserId);
         if (!error) setIsFollowingCreator(false);
       } else {
         const { error } = await supabase.from("user_follow_users").insert({

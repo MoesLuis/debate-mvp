@@ -24,11 +24,29 @@ function muxAuthHeader() {
   return `Basic ${basic}`;
 }
 
+function getCorsOrigin(req: NextRequest) {
+  // Mux expects a concrete origin string (not "*").
+  // Prefer Origin header; fallback to a known site URL if present.
+  const origin = req.headers.get("origin");
+  const site =
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    process.env.NEXT_PUBLIC_VERCEL_URL ||
+    process.env.VERCEL_URL;
+
+  if (origin && origin !== "null") return origin;
+  if (site) {
+    const normalized = site.startsWith("http") ? site : `https://${site}`;
+    return normalized;
+  }
+  // Last resort: omit cors_origin (Mux will apply default behavior)
+  return null;
+}
+
 export async function POST(req: NextRequest) {
   try {
     // 1) Require Bearer token (Supabase session token)
     const authHeader = req.headers.get("authorization") || "";
-    const token = authHeader.startsWith("Bearer ")
+    const token = authHeader.toLowerCase().startsWith("bearer ")
       ? authHeader.slice("Bearer ".length).trim()
       : null;
 
@@ -58,13 +76,10 @@ export async function POST(req: NextRequest) {
     const requestedTopicId = Number(body?.topicId);
     const requestedQuestionId = Number(body?.questionId);
 
-    const stance =
-      body?.stance === "pro" || body?.stance === "against"
-        ? body.stance
-        : "neutral";
+    const stance: "neutral" | "pro" | "against" =
+      body?.stance === "pro" || body?.stance === "against" ? body.stance : "neutral";
 
     const parentTakeIdRaw = body?.parentTakeId ? String(body.parentTakeId) : null;
-    const isChallengeable = !!body?.isChallengeable;
 
     if (!Number.isFinite(requestedTopicId) || !Number.isFinite(requestedQuestionId)) {
       return NextResponse.json(
@@ -132,6 +147,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // NEW: Only ROOT takes can be challengeable
+    const isChallengeable = finalParentTakeId ? false : !!body?.isChallengeable;
+
     // 5) Ensure question belongs to topic (using FINAL ids)
     const { data: qRow, error: qErr } = await supabaseAdmin
       .from("questions")
@@ -153,7 +171,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 6) Create Mux Direct Upload (signed upload URL)
-    const origin = req.headers.get("origin") || "*";
+    const corsOrigin = getCorsOrigin(req);
 
     const muxRes = await fetch("https://api.mux.com/video/v1/uploads", {
       method: "POST",
@@ -162,7 +180,7 @@ export async function POST(req: NextRequest) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        cors_origin: origin,
+        ...(corsOrigin ? { cors_origin: corsOrigin } : {}),
         new_asset_settings: { playback_policies: ["public"] },
       }),
     });
