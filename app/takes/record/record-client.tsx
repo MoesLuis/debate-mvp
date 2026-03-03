@@ -393,7 +393,13 @@ export default function RecordTakeClient() {
 
     if (!createRes.ok) {
       console.error("create-upload failed", createJson);
-      setStatus(`Create upload failed: ${createJson?.error || createRes.status}`);
+
+      if (createRes.status === 429) {
+        setStatus("Rate limit: you can post 4 root takes per hour. Try again in a bit.");
+      } else {
+        setStatus(`Create upload failed: ${createJson?.error || createRes.status}`);
+      }
+
       setBusy(false);
       return;
     }
@@ -438,12 +444,18 @@ export default function RecordTakeClient() {
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold">{isReply ? "Record a Reply" : "Record a Take"}</h1>
+          <h1 className="text-xl font-semibold">
+            {isReply ? "Record a Reply" : "Record a Take"}
+          </h1>
           {isReply && (
             <p className="text-sm text-zinc-700 mt-1">
               Replying to the thread starter. Your reply will appear under{" "}
               <strong>
-                {stance === "against" ? "Against" : stance === "pro" ? "In favor" : "Neutral"}
+                {stance === "against"
+                  ? "Against"
+                  : stance === "pro"
+                    ? "In favor"
+                    : "Neutral"}
               </strong>
               .
             </p>
@@ -469,7 +481,9 @@ export default function RecordTakeClient() {
             className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm disabled:opacity-70"
           >
             {topics.length === 0 ? (
-              <option value="">(No topics followed — add topics in Profile)</option>
+              <option value="">
+                (No topics followed — add topics in Profile)
+              </option>
             ) : (
               topics.map((t) => (
                 <option key={t.id} value={t.id}>
@@ -508,7 +522,11 @@ export default function RecordTakeClient() {
               <label className="block text-sm font-medium">Stance</label>
               <select
                 value={stance}
-                onChange={(e) => setStance(e.target.value as "neutral" | "pro" | "against")}
+                onChange={(e) =>
+                  setStance(
+                    e.target.value as "neutral" | "pro" | "against"
+                  )
+                }
                 className="mt-1 w-full rounded border border-zinc-300 bg-white p-2 text-sm"
               >
                 <option value="neutral">Neutral</option>

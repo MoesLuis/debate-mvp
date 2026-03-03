@@ -10,6 +10,7 @@ type CreateUploadBody = {
   stance?: "neutral" | "pro" | "against";
   parentTakeId?: string | null; // can be root OR a response; server will normalize to root
   isChallengeable?: boolean;
+  durationSeconds?: number; // <-- client already sends this
 };
 
 function muxAuthHeader() {
@@ -40,6 +41,19 @@ function getCorsOrigin(req: NextRequest) {
   }
   // Last resort: omit cors_origin (Mux will apply default behavior)
   return null;
+}
+
+function isRateLimitError(err: any) {
+  const msg = String(err?.message ?? "").toLowerCase();
+  const details = String(err?.details ?? "").toLowerCase();
+  const code = String(err?.code ?? "");
+
+  // Your trigger raises errcode 'P0001' and message "Rate limit: ..."
+  if (code === "P0001" && msg.includes("rate limit")) return true;
+  if (msg.includes("rate limit")) return true;
+  if (details.includes("rate limit")) return true;
+
+  return false;
 }
 
 export async function POST(req: NextRequest) {
@@ -80,6 +94,11 @@ export async function POST(req: NextRequest) {
       body?.stance === "pro" || body?.stance === "against" ? body.stance : "neutral";
 
     const parentTakeIdRaw = body?.parentTakeId ? String(body.parentTakeId) : null;
+
+    const durationSeconds =
+      typeof body?.durationSeconds === "number" && Number.isFinite(body.durationSeconds)
+        ? Math.max(1, Math.min(60, Math.round(body.durationSeconds)))
+        : null;
 
     if (!Number.isFinite(requestedTopicId) || !Number.isFinite(requestedQuestionId)) {
       return NextResponse.json(
@@ -219,11 +238,20 @@ export async function POST(req: NextRequest) {
         video_ref: uploadId,
         playback_id: null,
         status: "uploading",
+
+        ...(durationSeconds != null ? { duration_seconds: durationSeconds } : {}),
       })
       .select("id")
       .single();
 
     if (takeErr || !takeRow) {
+      if (isRateLimitError(takeErr)) {
+        return NextResponse.json(
+          { error: "Rate limit: max 4 root takes per hour. Try again soon." },
+          { status: 429 }
+        );
+      }
+
       return NextResponse.json(
         { error: "Failed to create take row", details: takeErr },
         { status: 500 }
