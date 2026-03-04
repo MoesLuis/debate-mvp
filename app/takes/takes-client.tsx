@@ -212,11 +212,7 @@ export default function TakesClient() {
 
   async function fetchTakeQuestionForInvite(takeId: string) {
     // Fetch question info directly from takes -> questions
-    const { data, error } = await supabase
-      .from("takes")
-      .select("question_id, questions(question)")
-      .eq("id", takeId)
-      .maybeSingle();
+    const { data, error } = await supabase.from("takes").select("question_id, questions(question)").eq("id", takeId).maybeSingle();
 
     if (error) {
       console.warn("fetchTakeQuestionForInvite error", error);
@@ -253,11 +249,7 @@ export default function TakesClient() {
     setInviteOpen(true);
 
     // Load opponent handle for display
-    const { data: prof } = await supabase
-      .from("profiles")
-      .select("handle")
-      .eq("user_id", activeCreatorId)
-      .maybeSingle();
+    const { data: prof } = await supabase.from("profiles").select("handle").eq("user_id", activeCreatorId).maybeSingle();
 
     if (prof?.handle) setOpponentHandle(prof.handle);
 
@@ -284,12 +276,10 @@ export default function TakesClient() {
 
     // Ensure question_id/text loaded (even if modal opened before data came back)
     let qid = inviteQuestionId;
-    let qtext = inviteQuestionText;
 
     if (qid == null && activeTake?.id) {
       const q = await fetchTakeQuestionForInvite(activeTake.id);
       qid = q.questionId;
-      qtext = q.questionText;
       setInviteQuestionId(q.questionId);
       setInviteQuestionText(q.questionText);
     }
@@ -499,10 +489,7 @@ export default function TakesClient() {
 
     const { data: topicsData } = await supabase.from("topics").select("id, name").order("name");
 
-    const { data: followedData } = await supabase
-      .from("user_topics")
-      .select("topic_id")
-      .eq("user_id", user.id);
+    const { data: followedData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
 
     if (topicsData) {
       setAllTopics(
@@ -565,10 +552,7 @@ export default function TakesClient() {
         data: { user },
       } = await supabase.auth.getUser();
       if (user) {
-        const { data: followedData } = await supabase
-          .from("user_topics")
-          .select("topic_id")
-          .eq("user_id", user.id);
+        const { data: followedData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
         setFollowed(new Set<number>((followedData ?? []).map((r: any) => Number(r.topic_id))));
       }
 
@@ -632,10 +616,7 @@ export default function TakesClient() {
       return;
     }
 
-    const { data: followedTopicsData } = await supabase
-      .from("user_topics")
-      .select("topic_id")
-      .eq("user_id", user.id);
+    const { data: followedTopicsData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
     setFollowed(new Set<number>((followedTopicsData ?? []).map((r: any) => Number(r.topic_id))));
 
     const p_tab = isFollowingTab ? "following" : "explore";
@@ -1022,20 +1003,12 @@ export default function TakesClient() {
     async function loadReactions() {
       if (!activeTake?.id) return;
 
-      const { count } = await supabase
-        .from("take_reactions")
-        .select("take_id", { count: "exact", head: true })
-        .eq("take_id", activeTake.id);
+      const { count } = await supabase.from("take_reactions").select("take_id", { count: "exact", head: true }).eq("take_id", activeTake.id);
 
       setLikeCount(count ?? 0);
 
       if (!userId) return;
-      const { data } = await supabase
-        .from("take_reactions")
-        .select("take_id")
-        .eq("take_id", activeTake.id)
-        .eq("user_id", userId)
-        .maybeSingle();
+      const { data } = await supabase.from("take_reactions").select("take_id").eq("take_id", activeTake.id).eq("user_id", userId).maybeSingle();
 
       setLiked(!!data);
     }
@@ -1060,11 +1033,7 @@ export default function TakesClient() {
 
     try {
       if (liked) {
-        const { error } = await supabase
-          .from("take_reactions")
-          .delete()
-          .eq("take_id", activeTake.id)
-          .eq("user_id", user.id);
+        const { error } = await supabase.from("take_reactions").delete().eq("take_id", activeTake.id).eq("user_id", user.id);
 
         if (!error) {
           setLiked(false);
@@ -1126,11 +1095,7 @@ export default function TakesClient() {
     setFollowUserBusy(true);
     try {
       if (isFollowingCreator) {
-        const { error } = await supabase
-          .from("user_follow_users")
-          .delete()
-          .eq("follower_id", userId)
-          .eq("following_id", targetUserId);
+        const { error } = await supabase.from("user_follow_users").delete().eq("follower_id", userId).eq("following_id", targetUserId);
         if (!error) setIsFollowingCreator(false);
       } else {
         const { error } = await supabase.from("user_follow_users").insert({
@@ -1378,6 +1343,21 @@ export default function TakesClient() {
     else router.push(`/u/${activeCreatorId}`);
   }
 
+  // Mobile “glass” style helpers
+  const mobileOutlineStyle: React.CSSProperties = {
+    textShadow:
+      "0 1px 2px rgba(0,0,0,0.95), 0 -1px 2px rgba(0,0,0,0.95), 1px 0 2px rgba(0,0,0,0.95), -1px 0 2px rgba(0,0,0,0.95)",
+  };
+
+  // Position above Safari bottom bar / home indicator
+  const mobileRailStyle: React.CSSProperties = {
+    bottom: "calc(5.5rem + env(safe-area-inset-bottom))",
+  };
+
+  const mobileBtnBase =
+    "w-12 h-12 rounded-2xl border border-white/20 bg-white/10 backdrop-blur-md text-white shadow-lg transition hover:bg-white/20 active:bg-white/25 active:scale-[0.98] disabled:opacity-50";
+  const mobileBtnText = "text-[11px] leading-tight";
+
   return (
     <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
       <TakesTopicsRibbon />
@@ -1390,8 +1370,7 @@ export default function TakesClient() {
 
             <div className="mt-2 text-sm text-zinc-700 space-y-1">
               <div>
-                <span className="font-medium">Opponent:</span>{" "}
-                {opponentHandle ? `@${opponentHandle}` : activeCreatorId.slice(0, 8) + "…"}
+                <span className="font-medium">Opponent:</span> {opponentHandle ? `@${opponentHandle}` : activeCreatorId.slice(0, 8) + "…"}
               </div>
               <div>
                 <span className="font-medium">Topic:</span> {activeTopicName}
@@ -1420,9 +1399,7 @@ export default function TakesClient() {
                 <option value="against">Against</option>
               </select>
 
-              <p className="mt-2 text-xs text-zinc-500">
-                This sends a private invite. They’ll accept/decline from their Inbox.
-              </p>
+              <p className="mt-2 text-xs text-zinc-500">This sends a private invite. They’ll accept/decline from their Inbox.</p>
             </div>
 
             {inviteMsg && <div className="mt-3 text-sm text-zinc-800">{inviteMsg}</div>}
@@ -1490,7 +1467,10 @@ export default function TakesClient() {
             <div className="text-center">
               <div className="text-xl font-semibold mb-2">Couldn’t load</div>
               <p className="text-sm text-zinc-600">{feedError}</p>
-              <button onClick={() => loadFeedFirstPage()} className="mt-4 px-4 py-2 rounded border border-zinc-400 bg-white hover:bg-zinc-50 text-sm">
+              <button
+                onClick={() => loadFeedFirstPage()}
+                className="mt-4 px-4 py-2 rounded border border-zinc-400 bg-white hover:bg-zinc-50 text-sm"
+              >
                 Retry
               </button>
             </div>
@@ -1499,9 +1479,7 @@ export default function TakesClient() {
           <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
             <div className="text-center">
               <div className="text-2xl font-semibold mb-2">No takes yet</div>
-              <p className="text-sm text-zinc-600">
-                {isFollowingTab ? "Follow some users to see their takes here." : "Record the first take for any topic."}
-              </p>
+              <p className="text-sm text-zinc-600">{isFollowingTab ? "Follow some users to see their takes here." : "Record the first take for any topic."}</p>
               <button onClick={() => router.push("/takes/record")} className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90">
                 Record a take
               </button>
@@ -1521,12 +1499,7 @@ export default function TakesClient() {
               className="absolute inset-0"
               style={{
                 transform: `translate3d(${dragX}px, ${dragY}px, 0)`,
-                transition:
-                  animateTransition === "none"
-                    ? "none"
-                    : dragging
-                      ? "none"
-                      : "transform 200ms ease",
+                transition: animateTransition === "none" ? "none" : dragging ? "none" : "transform 200ms ease",
                 willChange: "transform",
               }}
             >
@@ -1577,11 +1550,7 @@ export default function TakesClient() {
                 </div>
 
                 {showShowOriginalButton && (
-                  <button
-                    onClick={showOriginal}
-                    className="mt-2 text-xs underline opacity-90 hover:opacity-100"
-                    data-no-gesture="true"
-                  >
+                  <button onClick={showOriginal} className="mt-2 text-xs underline opacity-90 hover:opacity-100" data-no-gesture="true">
                     {loadingOriginal ? "Loading original…" : "Show original"}
                   </button>
                 )}
@@ -1672,7 +1641,8 @@ export default function TakesClient() {
         </div>
       )}
 
-      <div className="fixed right-6 top-1/2 -translate-y-1/2 flex flex-col gap-3">
+      {/* Desktop rail (hidden on mobile) */}
+      <div className="fixed right-6 top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3">
         <button
           onClick={() => {
             if (showingOriginal) backToThreadFromOriginal();
@@ -1773,6 +1743,118 @@ export default function TakesClient() {
           Record
           <br />
           take
+        </button>
+      </div>
+
+      {/* Mobile glass rail (over video) */}
+      <div className="fixed right-3 z-40 md:hidden flex flex-col gap-2" style={mobileRailStyle}>
+        <button
+          onClick={() => {
+            if (showingOriginal) backToThreadFromOriginal();
+            if (showingThread) backToEntryInThread();
+          }}
+          className={`${mobileBtnBase} ${mobileBtnText}`}
+          title={showingOriginal ? "Back to thread" : showingThread ? "Back" : "Topic"}
+          data-no-gesture="true"
+        >
+          <span style={mobileOutlineStyle}>{showingOriginal ? "Back" : showingThread ? "Back" : "Topic"}</span>
+        </button>
+
+        <button onClick={goToCreatorProfile} className={`${mobileBtnBase} ${mobileBtnText} relative`} data-no-gesture="true" title="Profile">
+          <span style={mobileOutlineStyle}>Profile</span>
+
+          {userId && activeCreatorId && activeCreatorId !== userId && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleFollowUser(activeCreatorId);
+              }}
+              disabled={followUserBusy}
+              className={`absolute -right-1 -bottom-1 w-6 h-6 rounded-full border text-[12px] flex items-center justify-center shadow ${
+                isFollowingCreator ? "bg-emerald-500/90 text-white border-emerald-200/60" : "bg-white/80 text-emerald-800 border-emerald-200/60"
+              } ${followUserBusy ? "opacity-60" : ""}`}
+              title={isFollowingCreator ? "Unfollow user" : "Follow user"}
+              aria-label={isFollowingCreator ? "Unfollow user" : "Follow user"}
+              data-no-gesture="true"
+            >
+              <span style={mobileOutlineStyle}>✓</span>
+            </button>
+          )}
+        </button>
+
+        <button
+          onClick={handleAgainst}
+          disabled={!activeTake?.id || !activeRootId}
+          className={`${mobileBtnBase} ${mobileBtnText}`}
+          title="Browse against replies"
+          data-no-gesture="true"
+        >
+          <span style={mobileOutlineStyle}>Against</span>
+        </button>
+
+        <button
+          onClick={toggleLike}
+          disabled={!activeTake?.id || likingBusy}
+          className={`${mobileBtnBase} ${mobileBtnText} ${liked ? "bg-white/25" : ""}`}
+          title="React"
+          data-no-gesture="true"
+        >
+          <div className="flex flex-col items-center justify-center">
+            <span style={mobileOutlineStyle}>👍</span>
+            <span className="text-[10px] opacity-90" style={mobileOutlineStyle}>
+              {likeCount}
+            </span>
+          </div>
+        </button>
+
+        <button
+          onClick={openJoinPicker}
+          disabled={!activeRootId}
+          className={`${mobileBtnBase} ${mobileBtnText}`}
+          title="Reply to the original take"
+          data-no-gesture="true"
+        >
+          <div className="flex flex-col items-center justify-center">
+            <span style={mobileOutlineStyle}>Join</span>
+            <span className="text-[10px] opacity-90" style={mobileOutlineStyle}>
+              take
+            </span>
+          </div>
+        </button>
+
+        {activeTake?.is_challengeable ? (
+          <button onClick={openInviteModal} className={`${mobileBtnBase} ${mobileBtnText}`} title="Challenge to a live debate" data-no-gesture="true">
+            <div className="flex flex-col items-center justify-center">
+              <span style={mobileOutlineStyle}>Live</span>
+              <span className="text-[10px] opacity-90" style={mobileOutlineStyle}>
+                debate
+              </span>
+            </div>
+          </button>
+        ) : (
+          <div className="w-12 h-12" />
+        )}
+
+        <button
+          onClick={handleInFavor}
+          disabled={!activeTake?.id || !activeRootId}
+          className={`${mobileBtnBase} ${mobileBtnText}`}
+          title="Browse in-favor replies"
+          data-no-gesture="true"
+        >
+          <span style={mobileOutlineStyle}>In favor</span>
+        </button>
+
+        <button
+          onClick={() => router.push("/takes/record")}
+          className="w-16 h-16 rounded-3xl border border-white/25 bg-white/10 backdrop-blur-md text-white shadow-lg transition hover:bg-white/20 active:bg-white/25 active:scale-[0.98]"
+          data-no-gesture="true"
+          title="Record take"
+        >
+          <div className="flex flex-col items-center justify-center text-[11px] leading-tight" style={mobileOutlineStyle}>
+            <div>Record</div>
+            <div>take</div>
+          </div>
         </button>
       </div>
     </div>
