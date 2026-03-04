@@ -505,7 +505,7 @@ export default function Home() {
             callFindPartner();
           }}
           disabled={finding}
-          className="rounded bg-emerald-600 px-4 py-2 text-white"
+          className="rounded border border-emerald-500/30 bg-emerald-600/15 hover:bg-emerald-600/20 px-4 py-2 text-white transition"
         >
           {finding ? "Searching…" : "Find partner"}
         </button>
