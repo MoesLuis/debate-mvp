@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -10,17 +10,18 @@ type TrendingTopic = {
   count: number;
 };
 
+type MyTopic = {
+  id: number;
+  name: string;
+};
+
 type GateMode = "matchmaking" | "scheduled";
 
 /**
  * Next.js requirement: useSearchParams must be inside a Suspense boundary.
  * So we isolate it into this tiny component and render it inside <Suspense>.
  */
-function JoinRoomListener({
-  onJoinRoom,
-}: {
-  onJoinRoom: (roomSlug: string) => void;
-}) {
+function JoinRoomListener({ onJoinRoom }: { onJoinRoom: (roomSlug: string) => void }) {
   const params = useSearchParams();
 
   useEffect(() => {
@@ -33,6 +34,43 @@ function JoinRoomListener({
   return null;
 }
 
+function trendStyleByRank(rank: number) {
+  // rank is 0-based
+  if (rank === 0) {
+    return {
+      emoji: "🔥",
+      cls: "bg-rose-600/20 border-rose-500/40 hover:bg-rose-600/25",
+      label: "Hot",
+    };
+  }
+  if (rank === 1) {
+    return {
+      emoji: "🚀",
+      cls: "bg-orange-600/20 border-orange-500/40 hover:bg-orange-600/25",
+      label: "Rising",
+    };
+  }
+  if (rank === 2) {
+    return {
+      emoji: "⭐",
+      cls: "bg-yellow-600/20 border-yellow-500/40 hover:bg-yellow-600/25",
+      label: "Top",
+    };
+  }
+  if (rank <= 5) {
+    return {
+      emoji: "📈",
+      cls: "bg-emerald-600/15 border-emerald-500/30 hover:bg-emerald-600/20",
+      label: "Trending",
+    };
+  }
+  return {
+    emoji: "💬",
+    cls: "bg-zinc-800/40 border-zinc-700 hover:bg-zinc-800/55",
+    label: "Active",
+  };
+}
+
 export default function Home() {
   const router = useRouter();
 
@@ -41,6 +79,9 @@ export default function Home() {
 
   const [handle, setHandle] = useState("");
   const [profileMsg, setProfileMsg] = useState<string | null>(null);
+
+  const [myTopics, setMyTopics] = useState<MyTopic[]>([]);
+  const [loadingMyTopics, setLoadingMyTopics] = useState(false);
 
   const [trending, setTrending] = useState<TrendingTopic[]>([]);
   const [waitingCount, setWaitingCount] = useState(0);
@@ -70,11 +111,7 @@ export default function Home() {
       setUserId(u?.id ?? null);
 
       if (u?.id) {
-        const { data: prof } = await supabase
-          .from("profiles")
-          .select("handle")
-          .eq("user_id", u.id)
-          .maybeSingle();
+        const { data: prof } = await supabase.from("profiles").select("handle").eq("user_id", u.id).maybeSingle();
 
         if (!cancelled && prof?.handle) setHandle(prof.handle);
       }
@@ -92,29 +129,77 @@ export default function Home() {
     };
   }, []);
 
+  /* ---------------- LOAD MY TOPICS ---------------- */
+  async function loadMyTopics() {
+    setLoadingMyTopics(true);
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      setMyTopics([]);
+      setLoadingMyTopics(false);
+      return;
+    }
+
+    const { data, error } = await supabase.from("user_topics").select("topic_id, topics(name)").eq("user_id", user.id);
+
+    if (error) {
+      console.warn("loadMyTopics error", error);
+      setMyTopics([]);
+      setLoadingMyTopics(false);
+      return;
+    }
+
+    const mapped: MyTopic[] = (data ?? [])
+      .map((row: any) => {
+        const id = Number(row?.topic_id);
+        const name = row?.topics?.name;
+        if (!Number.isFinite(id) || typeof name !== "string") return null;
+        return { id, name };
+      })
+      .filter(Boolean) as MyTopic[];
+
+    mapped.sort((a, b) => a.name.localeCompare(b.name));
+    setMyTopics(mapped);
+    setLoadingMyTopics(false);
+  }
+
+  useEffect(() => {
+    loadMyTopics();
+
+    // Keep in sync if user edits topics elsewhere
+    const channel = supabase
+      .channel("live-debates-my-topics")
+      .on("postgres_changes", { event: "*", schema: "public", table: "user_topics" }, () => loadMyTopics())
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
   /* ---------------- REALTIME MATCH DETECT ---------------- */
   useEffect(() => {
     if (!userId) return;
 
     const channel = supabase
       .channel(`matches-for-${userId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "matches" },
-        (payload: any) => {
-          const row = payload.new;
-          if (!row) return;
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, (payload: any) => {
+        const row = payload.new;
+        if (!row) return;
 
-          const isMe = row.user_a === userId || row.user_b === userId;
-          if (!isMe) return;
+        const isMe = row.user_a === userId || row.user_b === userId;
+        if (!isMe) return;
 
-          if (row.status === "active" && row.room_slug) {
-            setMatchSlug(row.room_slug);
-            setFinding(false);
-            setFindMsg(null);
-          }
+        if (row.status === "active" && row.room_slug) {
+          setMatchSlug(row.room_slug);
+          setFinding(false);
+          setFindMsg(null);
         }
-      )
+      })
       .subscribe();
 
     return () => {
@@ -123,21 +208,28 @@ export default function Home() {
   }, [userId]);
 
   /* ---------------- TRENDING ---------------- */
+  async function loadTrending() {
+    const { data, error } = await supabase.from("trending_topics").select("id, name, user_count").limit(12);
+
+    if (error || !data) return;
+
+    const rows: TrendingTopic[] = data
+      .map((row: any) => ({
+        id: Number(row.id),
+        name: row.name,
+        count: Number(row.user_count),
+      }))
+      .filter((t) => Number.isFinite(t.id) && typeof t.name === "string" && Number.isFinite(t.count));
+
+    rows.sort((a, b) => b.count - a.count);
+    setTrending(rows);
+  }
+
   useEffect(() => {
-    supabase
-      .from("trending_topics")
-      .select("id, name, user_count")
-      .limit(5)
-      .then(({ data }) => {
-        if (!data) return;
-        setTrending(
-          data.map((row: any) => ({
-            id: Number(row.id),
-            name: row.name,
-            count: Number(row.user_count),
-          }))
-        );
-      });
+    loadTrending();
+    // Light refresh so “trending” evolves without needing reload
+    const t = setInterval(loadTrending, 20000);
+    return () => clearInterval(t);
   }, []);
 
   /* ---------------- LIVE COUNTS ---------------- */
@@ -145,10 +237,7 @@ export default function Home() {
     let cancelled = false;
 
     async function refresh() {
-      const { data } = await supabase
-        .from("live_counts")
-        .select("debating_people, waiting_people")
-        .maybeSingle();
+      const { data } = await supabase.from("live_counts").select("debating_people, waiting_people").maybeSingle();
 
       if (!cancelled && data) {
         setDebatingPeople(Number(data.debating_people ?? 0));
@@ -203,9 +292,7 @@ export default function Home() {
     setProfileMsg(null);
     if (!userId || !handle.trim()) return;
 
-    const { error } = await supabase
-      .from("profiles")
-      .upsert({ user_id: userId, handle: handle.trim() });
+    const { error } = await supabase.from("profiles").upsert({ user_id: userId, handle: handle.trim() });
 
     setProfileMsg(error ? error.message : "Saved!");
   }
@@ -294,6 +381,15 @@ export default function Home() {
     router.replace("/");
   }
 
+  const canUseTopics = !!email;
+
+  const myTopicsEmptyText = useMemo(() => {
+    if (!email) return "Sign in to see your topics.";
+    if (loadingMyTopics) return "Loading topics…";
+    if (myTopics.length === 0) return "No topics selected yet. Add topics in your Profile.";
+    return null;
+  }, [email, loadingMyTopics, myTopics.length]);
+
   /* ---------------- UI ---------------- */
   return (
     <main className="p-6 space-y-6">
@@ -325,11 +421,7 @@ export default function Home() {
           <div className="mt-2">
             <label className="block text-sm mb-1">Display name</label>
             <div className="flex gap-2">
-              <input
-                value={handle}
-                onChange={(e) => setHandle(e.target.value)}
-                className="border border-zinc-700 rounded p-2 bg-black/40"
-              />
+              <input value={handle} onChange={(e) => setHandle(e.target.value)} className="border border-zinc-700 rounded p-2 bg-black/40" />
               <button onClick={saveHandle} className="bg-zinc-800 px-4 rounded">
                 Save
               </button>
@@ -339,24 +431,65 @@ export default function Home() {
         )}
       </div>
 
-      {/* Trending */}
+      {/* My Topics ribbon */}
+      <section>
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <h2 className="text-xl font-semibold">My topics</h2>
+          <button onClick={() => router.push("/profile")} className="text-xs rounded bg-zinc-800 px-3 py-1 hover:bg-zinc-700">
+            Edit topics
+          </button>
+        </div>
+
+        {myTopicsEmptyText ? (
+          <p className="text-sm text-zinc-400">{myTopicsEmptyText}</p>
+        ) : (
+          <div className="flex gap-2 overflow-x-auto pb-2 md:flex-wrap md:overflow-x-visible">
+            {myTopics.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => {
+                  setGateMode("matchmaking");
+                  callFindPartner(t.id, t.name);
+                }}
+                disabled={!canUseTopics || finding}
+                className="shrink-0 px-4 py-2 rounded-full border border-zinc-700 bg-zinc-900/40 hover:bg-zinc-900/60 text-sm"
+                title="Matchmake on this topic"
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Trending ribbon */}
       {trending.length > 0 && (
         <section>
           <h2 className="text-xl font-semibold mb-2">Trending topics</h2>
-          <ul className="space-y-2 text-sm">
-            {trending.map((t) => (
-              <li key={t.id}>
+
+          <div className="flex gap-2 overflow-x-auto pb-2 md:flex-wrap md:overflow-x-visible">
+            {trending.map((t, idx) => {
+              const sty = trendStyleByRank(idx);
+              return (
                 <button
-                  onClick={() => callFindPartner(t.id, t.name)}
+                  key={t.id}
+                  onClick={() => {
+                    setGateMode("matchmaking");
+                    callFindPartner(t.id, t.name);
+                  }}
                   disabled={finding}
-                  className="hover:text-emerald-400"
+                  className={`shrink-0 px-4 py-2 rounded-full border text-sm transition ${sty.cls}`}
+                  title={`${sty.label} • ${t.count} debater${t.count === 1 ? "" : "s"}`}
                 >
-                  {t.name} — {t.count} debater{t.count === 1 ? "" : "s"}
+                  <span className="mr-2">{sty.emoji}</span>
+                  {t.name}
+                  <span className="ml-2 text-xs opacity-80">({t.count})</span>
                 </button>
-              </li>
-            ))}
-          </ul>
-          <p className="text-xs text-zinc-400 mt-3">
+              );
+            })}
+          </div>
+
+          <p className="text-xs text-zinc-400 mt-2">
             {debatingPeople} debating now • {waitingCount} waiting
           </p>
         </section>
@@ -441,11 +574,7 @@ export default function Home() {
                 Cancel
               </button>
 
-              <button
-                onClick={() => acceptGateAndJoin(pendingRoom)}
-                className="rounded bg-emerald-600 px-4 py-2 text-white"
-                disabled={gateBusy}
-              >
+              <button onClick={() => acceptGateAndJoin(pendingRoom)} className="rounded bg-emerald-600 px-4 py-2 text-white" disabled={gateBusy}>
                 {gateBusy ? "Entering…" : "I accept ✅"}
               </button>
             </div>
