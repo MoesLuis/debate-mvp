@@ -1351,7 +1351,7 @@ export default function TakesClient() {
 
   // Position above Safari bottom bar / home indicator
   const mobileRailStyle: React.CSSProperties = {
-    bottom: "calc(2.25rem + env(safe-area-inset-bottom))",
+    bottom: "calc(0.5rem + env(safe-area-inset-bottom))",
   };
 
   const mobileBtnBase =
