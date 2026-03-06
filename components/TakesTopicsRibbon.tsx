@@ -106,7 +106,7 @@ export default function TakesTopicsRibbon() {
     <div className="flex items-center gap-3 overflow-x-auto pb-3">
       <button
         onClick={() => router.push("/profile")}
-        className="px-4 py-2 rounded-full border border-zinc-400 bg-zinc-300 text-sm shrink-0"
+        className="px-4 py-2 rounded-full border border-yellow-500/40 bg-yellow-600/20 hover:bg-yellow-600/25 text-sm shrink-0 transition"
         aria-label="Edit topics"
       >
         Topics

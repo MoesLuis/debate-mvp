@@ -1529,7 +1529,7 @@ export default function TakesClient() {
                         toggleFollowTopic(activeTopicId);
                       }}
                       className={`px-2 py-1 rounded-full text-xs border transition ${
-                        isTopicFollowed ? "bg-white text-black border-white" : "bg-transparent text-white border-white/60 hover:border-white"
+                        isTopicFollowed ? "bg-emerald-600/15 text-white border-emerald-500/30 hover:bg-emerald-600/20" : "bg-transparent text-white border-white/60 hover:border-white"
                       }`}
                       title={isTopicFollowed ? "Unfollow topic" : "Follow topic"}
                       data-no-gesture="true"
