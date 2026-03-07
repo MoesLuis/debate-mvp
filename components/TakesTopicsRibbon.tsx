@@ -126,7 +126,7 @@ export default function TakesTopicsRibbon() {
           <button
             key={t.id}
             onClick={() => removeTopic(t.id)}
-            className="px-4 py-2 rounded-full border border-zinc-400 bg-zinc-100 text-sm shrink-0 hover:bg-zinc-50"
+            className="px-4 py-2 rounded-full border border-emerald-500/40 bg-emerald-600/20 hover:bg-emerald-600/25 text-sm shrink-0 transition text-white" //This sets the color for the individual topics bubbles
             title="Click to remove from your topics"
           >
             {t.name}
