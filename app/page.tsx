@@ -10,17 +10,22 @@ type TrendingTopic = {
   count: number;
 };
 
+type TrendingQuestion = {
+  id: number;
+  topicId: number;
+  topicName: string;
+  question: string;
+  createdAt: string | null;
+};
+
 type MyTopic = {
   id: number;
   name: string;
 };
 
 type GateMode = "matchmaking" | "scheduled";
+type Stance = "in_favor" | "against";
 
-/**
- * Next.js requirement: useSearchParams must be inside a Suspense boundary.
- * So we isolate it into this tiny component and render it inside <Suspense>.
- */
 function JoinRoomListener({ onJoinRoom }: { onJoinRoom: (roomSlug: string) => void }) {
   const params = useSearchParams();
 
@@ -35,7 +40,6 @@ function JoinRoomListener({ onJoinRoom }: { onJoinRoom: (roomSlug: string) => vo
 }
 
 function trendStyleByRank(rank: number) {
-  // rank is 0-based
   if (rank === 0) {
     return {
       emoji: "🔥",
@@ -82,17 +86,21 @@ export default function Home() {
 
   const [myTopics, setMyTopics] = useState<MyTopic[]>([]);
   const [loadingMyTopics, setLoadingMyTopics] = useState(false);
+  const [topicSaveMsg, setTopicSaveMsg] = useState<string | null>(null);
+  const [savingTopicId, setSavingTopicId] = useState<number | null>(null);
 
   const [trending, setTrending] = useState<TrendingTopic[]>([]);
+  const [trendingQuestions, setTrendingQuestions] = useState<TrendingQuestion[]>([]);
+  const [selectedQuestionId, setSelectedQuestionId] = useState<number | null>(null);
+
   const [waitingCount, setWaitingCount] = useState(0);
   const [debatingPeople, setDebatingPeople] = useState(0);
 
   const [finding, setFinding] = useState(false);
   const [findMsg, setFindMsg] = useState<string | null>(null);
   const [matchSlug, setMatchSlug] = useState<string | null>(null);
-  const [activeTopic, setActiveTopic] = useState<string | null>(null);
+  const [activeSearchLabel, setActiveSearchLabel] = useState<string | null>(null);
 
-  // 🔒 Consent gate state
   const [showGate, setShowGate] = useState(false);
   const [pendingRoom, setPendingRoom] = useState<string | null>(null);
   const [gateMode, setGateMode] = useState<GateMode>("matchmaking");
@@ -111,7 +119,11 @@ export default function Home() {
       setUserId(u?.id ?? null);
 
       if (u?.id) {
-        const { data: prof } = await supabase.from("profiles").select("handle").eq("user_id", u.id).maybeSingle();
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("handle")
+          .eq("user_id", u.id)
+          .maybeSingle();
 
         if (!cancelled && prof?.handle) setHandle(prof.handle);
       }
@@ -143,7 +155,10 @@ export default function Home() {
       return;
     }
 
-    const { data, error } = await supabase.from("user_topics").select("topic_id, topics(name)").eq("user_id", user.id);
+    const { data, error } = await supabase
+      .from("user_topics")
+      .select("topic_id, topics(name)")
+      .eq("user_id", user.id);
 
     if (error) {
       console.warn("loadMyTopics error", error);
@@ -169,7 +184,6 @@ export default function Home() {
   useEffect(() => {
     loadMyTopics();
 
-    // Keep in sync if user edits topics elsewhere
     const channel = supabase
       .channel("live-debates-my-topics")
       .on("postgres_changes", { event: "*", schema: "public", table: "user_topics" }, () => loadMyTopics())
@@ -207,9 +221,12 @@ export default function Home() {
     };
   }, [userId]);
 
-  /* ---------------- TRENDING ---------------- */
+  /* ---------------- TRENDING TOPICS ---------------- */
   async function loadTrending() {
-    const { data, error } = await supabase.from("trending_topics").select("id, name, user_count").limit(12);
+    const { data, error } = await supabase
+      .from("trending_topics")
+      .select("id, name, user_count")
+      .limit(12);
 
     if (error || !data) return;
 
@@ -219,7 +236,12 @@ export default function Home() {
         name: row.name,
         count: Number(row.user_count),
       }))
-      .filter((t) => Number.isFinite(t.id) && typeof t.name === "string" && Number.isFinite(t.count));
+      .filter(
+        (t) =>
+          Number.isFinite(t.id) &&
+          typeof t.name === "string" &&
+          Number.isFinite(t.count)
+      );
 
     rows.sort((a, b) => b.count - a.count);
     setTrending(rows);
@@ -227,8 +249,51 @@ export default function Home() {
 
   useEffect(() => {
     loadTrending();
-    // Light refresh so “trending” evolves without needing reload
     const t = setInterval(loadTrending, 20000);
+    return () => clearInterval(t);
+  }, []);
+
+  /* ---------------- TRENDING QUESTIONS ---------------- */
+  async function loadTrendingQuestions() {
+    const { data, error } = await supabase
+      .from("questions")
+      .select("id, topic_id, question, created_at, topics(name)")
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(12);
+
+    if (error || !data) return;
+
+    const rows: TrendingQuestion[] = (data ?? [])
+      .map((row: any) => {
+        const topicId = Number(row?.topic_id);
+        const topicName = row?.topics?.name;
+
+        if (
+          !Number.isFinite(Number(row?.id)) ||
+          !Number.isFinite(topicId) ||
+          typeof row?.question !== "string" ||
+          typeof topicName !== "string"
+        ) {
+          return null;
+        }
+
+        return {
+          id: Number(row.id),
+          topicId,
+          topicName,
+          question: row.question,
+          createdAt: row.created_at ?? null,
+        };
+      })
+      .filter(Boolean) as TrendingQuestion[];
+
+    setTrendingQuestions(rows);
+  }
+
+  useEffect(() => {
+    loadTrendingQuestions();
+    const t = setInterval(loadTrendingQuestions, 20000);
     return () => clearInterval(t);
   }, []);
 
@@ -237,7 +302,10 @@ export default function Home() {
     let cancelled = false;
 
     async function refresh() {
-      const { data } = await supabase.from("live_counts").select("debating_people, waiting_people").maybeSingle();
+      const { data } = await supabase
+        .from("live_counts")
+        .select("debating_people, waiting_people")
+        .maybeSingle();
 
       if (!cancelled && data) {
         setDebatingPeople(Number(data.debating_people ?? 0));
@@ -253,10 +321,10 @@ export default function Home() {
     };
   }, []);
 
-  /* ---------------- CONSENT AUTO-CANCEL (only matchmaking; 20s) ---------------- */
+  /* ---------------- CONSENT AUTO-CANCEL ---------------- */
   useEffect(() => {
     if (!showGate || !pendingRoom) return;
-    if (gateMode !== "matchmaking") return; // ✅ do NOT auto-cancel scheduled rooms
+    if (gateMode !== "matchmaking") return;
 
     const timer = setTimeout(async () => {
       const {
@@ -292,18 +360,70 @@ export default function Home() {
     setProfileMsg(null);
     if (!userId || !handle.trim()) return;
 
-    const { error } = await supabase.from("profiles").upsert({ user_id: userId, handle: handle.trim() });
+    const { error } = await supabase
+      .from("profiles")
+      .upsert({ user_id: userId, handle: handle.trim() });
 
     setProfileMsg(error ? error.message : "Saved!");
   }
 
-  async function callFindPartner(topicId?: number, topicName?: string) {
+  async function addTrendingTopicToMyTopics(topic: { id: number; name: string }) {
+    setTopicSaveMsg(null);
+    setSavingTopicId(topic.id);
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      setTopicSaveMsg("Sign in to save topics.");
+      setSavingTopicId(null);
+      return;
+    }
+
+    const alreadySaved = myTopics.some((t) => t.id === topic.id);
+    if (alreadySaved) {
+      setTopicSaveMsg(`"${topic.name}" is already in your topics.`);
+      setSavingTopicId(null);
+      return;
+    }
+
+    const { error } = await supabase.from("user_topics").insert({
+      user_id: user.id,
+      topic_id: topic.id,
+    });
+
+    if (error) {
+      setTopicSaveMsg(error.message);
+    } else {
+      setTopicSaveMsg(`Added "${topic.name}" to My topics.`);
+      await loadMyTopics();
+    }
+
+    setSavingTopicId(null);
+  }
+
+  async function callFindPartner(options?: {
+    topicId?: number;
+    topicName?: string;
+    questionId?: number;
+    questionText?: string;
+    stance?: Stance;
+  }) {
     if (finding) return;
 
     setFinding(true);
     setFindMsg(null);
     setMatchSlug(null);
-    setActiveTopic(topicName ?? null);
+
+    if (options?.questionId && options?.questionText && options?.stance) {
+      const stanceLabel = options.stance === "in_favor" ? "In Favor" : "Against";
+      setActiveSearchLabel(`${stanceLabel}: ${options.questionText}`);
+    } else if (options?.topicName) {
+      setActiveSearchLabel(options.topicName);
+    } else {
+      setActiveSearchLabel(null);
+    }
 
     const {
       data: { session },
@@ -315,18 +435,33 @@ export default function Home() {
       return;
     }
 
+    const payload: Record<string, any> = {};
+
+    if (options?.topicId != null) payload.topicId = options.topicId;
+    if (options?.questionId != null) payload.questionId = options.questionId;
+    if (options?.stance != null) payload.stance = options.stance;
+
     const res = await fetch("/api/find-partner", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${session.access_token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(topicId != null ? { topicId } : {}),
+      body: JSON.stringify(payload),
     });
 
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) setFindMsg(body?.error || "Server error");
-    else if (!body?.match) setFindMsg("Searching… waiting for another debater.");
+
+    if (!res.ok) {
+      setFindMsg(body?.error || "Server error");
+    } else if (!body?.match) {
+      if (options?.questionText && options?.stance) {
+        const stanceLabel = options.stance === "in_favor" ? "in favor of" : "against";
+        setFindMsg(`Searching… waiting for someone ${stanceLabel} this question.`);
+      } else {
+        setFindMsg("Searching… waiting for another debater.");
+      }
+    }
 
     setFinding(false);
   }
@@ -345,7 +480,6 @@ export default function Home() {
       return;
     }
 
-    // If it’s a scheduled room, activate it before entering.
     if (gateMode === "scheduled") {
       const res = await fetch("/api/activate-match", {
         method: "POST",
@@ -372,16 +506,17 @@ export default function Home() {
   }
 
   function openScheduledJoin(roomSlug: string) {
-    // Open the “Before you enter” gate for scheduled joins
     setPendingRoom(roomSlug);
     setGateMode("scheduled");
     setShowGate(true);
-
-    // Clean URL so refresh doesn’t retrigger it
     router.replace("/");
   }
 
   const canUseTopics = !!email;
+
+  const myTopicIds = useMemo(() => {
+    return new Set(myTopics.map((t) => t.id));
+  }, [myTopics]);
 
   const myTopicsEmptyText = useMemo(() => {
     if (!email) return "Sign in to see your topics.";
@@ -393,14 +528,12 @@ export default function Home() {
   /* ---------------- UI ---------------- */
   return (
     <main className="p-6 space-y-6">
-      {/* ✅ REQUIRED: JoinRoomListener uses useSearchParams, so wrap in Suspense */}
       <Suspense fallback={null}>
         <JoinRoomListener onJoinRoom={openScheduledJoin} />
       </Suspense>
 
       <h1 className="text-3xl font-bold">Welcome to Debate.Me</h1>
 
-      {/* Sign in card */}
       <div className="p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
         {email ? (
           <div className="space-x-3 mb-3">
@@ -421,7 +554,11 @@ export default function Home() {
           <div className="mt-2">
             <label className="block text-sm mb-1">Display name</label>
             <div className="flex gap-2">
-              <input value={handle} onChange={(e) => setHandle(e.target.value)} className="border border-zinc-700 rounded p-2 bg-black/40" />
+              <input
+                value={handle}
+                onChange={(e) => setHandle(e.target.value)}
+                className="border border-zinc-700 rounded p-2 bg-black/40"
+              />
               <button onClick={saveHandle} className="bg-zinc-800 px-4 rounded">
                 Save
               </button>
@@ -431,11 +568,13 @@ export default function Home() {
         )}
       </div>
 
-      {/* My Topics ribbon */}
       <section>
         <div className="flex items-center justify-between gap-3 mb-2">
           <h2 className="text-xl font-semibold">My topics</h2>
-          <button onClick={() => router.push("/profile")} className="text-xs rounded bg-zinc-800 px-3 py-1 hover:bg-zinc-700">
+          <button
+            onClick={() => router.push("/profile")}
+            className="text-xs rounded bg-zinc-800 px-3 py-1 hover:bg-zinc-700"
+          >
             Edit topics
           </button>
         </div>
@@ -449,7 +588,7 @@ export default function Home() {
                 key={t.id}
                 onClick={() => {
                   setGateMode("matchmaking");
-                  callFindPartner(t.id, t.name);
+                  callFindPartner({ topicId: t.id, topicName: t.name });
                 }}
                 disabled={!canUseTopics || finding}
                 className="shrink-0 px-4 py-2 rounded-full border border-zinc-700 bg-zinc-900/40 hover:bg-zinc-900/60 text-sm"
@@ -462,7 +601,6 @@ export default function Home() {
         )}
       </section>
 
-      {/* Trending ribbon */}
       {trending.length > 0 && (
         <section>
           <h2 className="text-xl font-semibold mb-2">Trending topics</h2>
@@ -470,20 +608,23 @@ export default function Home() {
           <div className="flex gap-2 overflow-x-auto pb-2 md:flex-wrap md:overflow-x-visible">
             {trending.map((t, idx) => {
               const sty = trendStyleByRank(idx);
+              const alreadySaved = myTopicIds.has(t.id);
+
               return (
                 <button
                   key={t.id}
-                  onClick={() => {
-                    setGateMode("matchmaking");
-                    callFindPartner(t.id, t.name);
-                  }}
-                  disabled={finding}
+                  onClick={() => addTrendingTopicToMyTopics({ id: t.id, name: t.name })}
+                  disabled={savingTopicId === t.id}
                   className={`shrink-0 px-4 py-2 rounded-full border text-sm transition ${sty.cls}`}
                   title={`${sty.label} • ${t.count} debater${t.count === 1 ? "" : "s"}`}
                 >
                   <span className="mr-2">{sty.emoji}</span>
                   {t.name}
-                  <span className="ml-2 text-xs opacity-80">({t.count})</span>
+                  {alreadySaved ? (
+                    <span className="ml-2 text-xs opacity-90">✓ Saved</span>
+                  ) : (
+                    <span className="ml-2 text-xs opacity-80">+ Add</span>
+                  )}
                 </button>
               );
             })}
@@ -492,10 +633,95 @@ export default function Home() {
           <p className="text-xs text-zinc-400 mt-2">
             {debatingPeople} debating now • {waitingCount} waiting
           </p>
+
+          <p className="text-xs text-zinc-500 mt-1">
+            Click a trending topic to add it to My topics.
+          </p>
+
+          {topicSaveMsg && (
+            <p className="text-sm text-zinc-300 mt-2">{topicSaveMsg}</p>
+          )}
         </section>
       )}
 
-      {/* Find partner */}
+      {trendingQuestions.length > 0 && (
+        <section>
+          <div className="mb-2">
+            <h2 className="text-xl font-semibold">Trending Questions</h2>
+            <p className="text-sm text-zinc-400 mt-1">
+              Pick a question, then choose In Favor or Against to queue for an opponent with the opposite stance.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {trendingQuestions.map((q) => {
+              const isSelected = selectedQuestionId === q.id;
+
+              return (
+                <div
+                  key={q.id}
+                  className={`rounded-2xl border p-4 transition ${
+                    isSelected
+                      ? "border-emerald-500/40 bg-emerald-600/10"
+                      : "border-zinc-800 bg-zinc-900/50"
+                  }`}
+                >
+                  <button
+                    onClick={() =>
+                      setSelectedQuestionId((prev) => (prev === q.id ? null : q.id))
+                    }
+                    className="w-full text-left"
+                  >
+                    <p className="text-xs uppercase tracking-wide text-zinc-400 mb-2">
+                      {q.topicName}
+                    </p>
+                    <p className="text-base font-medium leading-6">{q.question}</p>
+                  </button>
+
+                  {isSelected && (
+                    <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                      <button
+                        onClick={() => {
+                          setGateMode("matchmaking");
+                          callFindPartner({
+                            topicId: q.topicId,
+                            topicName: q.topicName,
+                            questionId: q.id,
+                            questionText: q.question,
+                            stance: "in_favor",
+                          });
+                        }}
+                        disabled={finding}
+                        className="rounded-full border border-emerald-500/40 bg-emerald-600/15 px-4 py-2 text-sm hover:bg-emerald-600/20"
+                      >
+                        In Favor
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setGateMode("matchmaking");
+                          callFindPartner({
+                            topicId: q.topicId,
+                            topicName: q.topicName,
+                            questionId: q.id,
+                            questionText: q.question,
+                            stance: "against",
+                          });
+                        }}
+                        disabled={finding}
+                        className="rounded-full border border-rose-500/40 bg-rose-600/15 px-4 py-2 text-sm hover:bg-rose-600/20"
+                      >
+                        Against
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <section className="p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
         <h2 className="text-lg font-semibold mb-2">Find a debating partner</h2>
 
@@ -512,7 +738,7 @@ export default function Home() {
 
         {finding && (
           <p className="mt-3 text-sm animate-pulse">
-            Looking for someone {activeTopic ? `debating ${activeTopic}` : "to debate with"}…
+            Looking for someone {activeSearchLabel ? `for ${activeSearchLabel}` : "to debate with"}…
           </p>
         )}
 
@@ -532,7 +758,6 @@ export default function Home() {
         )}
       </section>
 
-      {/* 🔒 CONSENT MODAL */}
       {showGate && pendingRoom && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
           <div className="max-w-md w-full rounded-lg bg-zinc-950 border border-zinc-800 p-4">
@@ -546,7 +771,6 @@ export default function Home() {
             <div className="mt-4 flex justify-end gap-2">
               <button
                 onClick={async () => {
-                  // Only cancel matchmaking matches; scheduled should just close modal.
                   if (gateMode === "matchmaking" && pendingRoom) {
                     const {
                       data: { session },
@@ -574,7 +798,11 @@ export default function Home() {
                 Cancel
               </button>
 
-              <button onClick={() => acceptGateAndJoin(pendingRoom)} className="rounded bg-emerald-600 px-4 py-2 text-white" disabled={gateBusy}>
+              <button
+                onClick={() => acceptGateAndJoin(pendingRoom)}
+                className="rounded bg-emerald-600 px-4 py-2 text-white"
+                disabled={gateBusy}
+              >
                 {gateBusy ? "Entering…" : "I accept ✅"}
               </button>
             </div>
