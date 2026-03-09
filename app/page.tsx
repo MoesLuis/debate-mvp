@@ -453,15 +453,16 @@ export default function Home() {
     const body = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-      setFindMsg(body?.error || "Server error");
-    } else if (!body?.match) {
-      if (options?.questionText && options?.stance) {
-        const stanceLabel = options.stance === "in_favor" ? "in favor of" : "against";
-        setFindMsg(`Searching… waiting for someone ${stanceLabel} this question.`);
-      } else {
-        setFindMsg("Searching… waiting for another debater.");
-      }
-    }
+  setFindMsg(body?.error || "Server error");
+} else if (!body?.match) {
+  if (options?.questionText && options?.stance) {
+    const neededOpponentLabel =
+      options.stance === "in_favor" ? "against" : "in favor of";
+    setFindMsg(`Searching… waiting for someone ${neededOpponentLabel} this question.`);
+  } else {
+    setFindMsg("Searching… waiting for another debater.");
+  }
+}
 
     setFinding(false);
   }
