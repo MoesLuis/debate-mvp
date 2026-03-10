@@ -16,6 +16,9 @@ type TrendingQuestion = {
   topicName: string;
   question: string;
   createdAt: string | null;
+  trendScore: number;
+  activeMatches: number;
+  recentMatches: number;
 };
 
 type MyTopic = {
@@ -75,6 +78,53 @@ function trendStyleByRank(rank: number) {
   };
 }
 
+function getQuestionTrendScore(matchRows: any[], createdAt: string | null) {
+  const now = Date.now();
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  const threeDaysMs = 3 * oneDayMs;
+
+  let activeMatches = 0;
+  let recentMatches = 0;
+  let score = 0;
+
+  for (const row of matchRows) {
+    const status = String(row?.status ?? "");
+    const createdMs = row?.created_at ? new Date(row.created_at).getTime() : 0;
+
+    if (status === "active") {
+      activeMatches += 1;
+      recentMatches += 1;
+      score += 12;
+      continue;
+    }
+
+    if (!createdMs) continue;
+
+    const age = now - createdMs;
+
+    if (age <= oneDayMs) {
+      recentMatches += 1;
+      score += 6;
+    } else {
+      recentMatches += 1;
+      score += 3;
+    }
+  }
+
+  if (createdAt) {
+    const questionAge = now - new Date(createdAt).getTime();
+    if (questionAge <= threeDaysMs) {
+      score += 1;
+    }
+  }
+
+  return {
+    score,
+    activeMatches,
+    recentMatches,
+  };
+}
+
 export default function Home() {
   const router = useRouter();
 
@@ -91,6 +141,7 @@ export default function Home() {
 
   const [trending, setTrending] = useState<TrendingTopic[]>([]);
   const [trendingQuestions, setTrendingQuestions] = useState<TrendingQuestion[]>([]);
+  const [loadingTrendingQuestions, setLoadingTrendingQuestions] = useState(false);
   const [selectedQuestionId, setSelectedQuestionId] = useState<number | null>(null);
 
   const [waitingCount, setWaitingCount] = useState(0);
@@ -255,16 +306,31 @@ export default function Home() {
 
   /* ---------------- TRENDING QUESTIONS ---------------- */
   async function loadTrendingQuestions() {
-    const { data, error } = await supabase
+    setLoadingTrendingQuestions(true);
+
+    if (!userId || myTopics.length === 0) {
+      setTrendingQuestions([]);
+      setSelectedQuestionId((prev) => prev);
+      setLoadingTrendingQuestions(false);
+      return;
+    }
+
+    const topicIds = myTopics.map((t) => t.id);
+
+    const { data: questionData, error: questionError } = await supabase
       .from("questions")
       .select("id, topic_id, question, created_at, topics(name)")
       .eq("is_active", true)
-      .order("created_at", { ascending: false })
-      .limit(12);
+      .in("topic_id", topicIds)
+      .limit(50);
 
-    if (error || !data) return;
+    if (questionError || !questionData) {
+      setTrendingQuestions([]);
+      setLoadingTrendingQuestions(false);
+      return;
+    }
 
-    const rows: TrendingQuestion[] = (data ?? [])
+    const mappedQuestions = (questionData ?? [])
       .map((row: any) => {
         const topicId = Number(row?.topic_id);
         const topicName = row?.topics?.name;
@@ -286,16 +352,79 @@ export default function Home() {
           createdAt: row.created_at ?? null,
         };
       })
-      .filter(Boolean) as TrendingQuestion[];
+      .filter(Boolean) as Array<{
+      id: number;
+      topicId: number;
+      topicName: string;
+      question: string;
+      createdAt: string | null;
+    }>;
 
-    setTrendingQuestions(rows);
+    if (mappedQuestions.length === 0) {
+      setTrendingQuestions([]);
+      setLoadingTrendingQuestions(false);
+      return;
+    }
+
+    const questionIds = mappedQuestions.map((q) => q.id);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: matchData, error: matchError } = await supabase
+      .from("matches")
+      .select("question_id, status, created_at")
+      .in("question_id", questionIds)
+      .gte("created_at", sevenDaysAgo);
+
+    const matchRows = matchError || !matchData ? [] : matchData;
+
+    const matchesByQuestion = new Map<number, any[]>();
+    for (const row of matchRows) {
+      const qid = Number(row?.question_id);
+      if (!Number.isFinite(qid)) continue;
+      const arr = matchesByQuestion.get(qid) ?? [];
+      arr.push(row);
+      matchesByQuestion.set(qid, arr);
+    }
+
+    const ranked: TrendingQuestion[] = mappedQuestions
+      .map((q) => {
+        const stats = getQuestionTrendScore(matchesByQuestion.get(q.id) ?? [], q.createdAt);
+
+        return {
+          id: q.id,
+          topicId: q.topicId,
+          topicName: q.topicName,
+          question: q.question,
+          createdAt: q.createdAt,
+          trendScore: stats.score,
+          activeMatches: stats.activeMatches,
+          recentMatches: stats.recentMatches,
+        };
+      })
+      .sort((a, b) => {
+        if (b.trendScore !== a.trendScore) return b.trendScore - a.trendScore;
+        if (b.activeMatches !== a.activeMatches) return b.activeMatches - a.activeMatches;
+        if (b.recentMatches !== a.recentMatches) return b.recentMatches - a.recentMatches;
+
+        const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bTime - aTime;
+      })
+      .slice(0, 12);
+
+    setTrendingQuestions(ranked);
+    setSelectedQuestionId((prev) =>
+      prev != null && ranked.some((q) => q.id === prev) ? prev : null
+    );
+    setLoadingTrendingQuestions(false);
   }
 
   useEffect(() => {
     loadTrendingQuestions();
     const t = setInterval(loadTrendingQuestions, 20000);
     return () => clearInterval(t);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, myTopics]);
 
   /* ---------------- LIVE COUNTS ---------------- */
   useEffect(() => {
@@ -453,16 +582,16 @@ export default function Home() {
     const body = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-  setFindMsg(body?.error || "Server error");
-} else if (!body?.match) {
-  if (options?.questionText && options?.stance) {
-    const neededOpponentLabel =
-      options.stance === "in_favor" ? "against" : "in favor of";
-    setFindMsg(`Searching… waiting for someone ${neededOpponentLabel} this question.`);
-  } else {
-    setFindMsg("Searching… waiting for another debater.");
-  }
-}
+      setFindMsg(body?.error || "Server error");
+    } else if (!body?.match) {
+      if (options?.questionText && options?.stance) {
+        const neededOpponentLabel =
+          options.stance === "in_favor" ? "against" : "in favor of";
+        setFindMsg(`Searching… waiting for someone ${neededOpponentLabel} this question.`);
+      } else {
+        setFindMsg("Searching… waiting for another debater.");
+      }
+    }
 
     setFinding(false);
   }
@@ -525,6 +654,14 @@ export default function Home() {
     if (myTopics.length === 0) return "No topics selected yet. Add topics in your Profile.";
     return null;
   }, [email, loadingMyTopics, myTopics.length]);
+
+  const trendingQuestionsEmptyText = useMemo(() => {
+    if (!email) return "Sign in to see trending questions from your saved topics.";
+    if (loadingMyTopics || loadingTrendingQuestions) return "Loading trending questions…";
+    if (myTopics.length === 0) return "Save topics to start seeing trending questions here.";
+    if (trendingQuestions.length === 0) return "No active questions yet for your saved topics.";
+    return null;
+  }, [email, loadingMyTopics, loadingTrendingQuestions, myTopics.length, trendingQuestions.length]);
 
   /* ---------------- UI ---------------- */
   return (
@@ -645,15 +782,17 @@ export default function Home() {
         </section>
       )}
 
-      {trendingQuestions.length > 0 && (
-        <section>
-          <div className="mb-2">
-            <h2 className="text-xl font-semibold">Trending Questions</h2>
-            <p className="text-sm text-zinc-400 mt-1">
-              Pick a question, then choose In Favor or Against to queue for an opponent with the opposite stance.
-            </p>
-          </div>
+      <section>
+        <div className="mb-2">
+          <h2 className="text-xl font-semibold">Trending Questions</h2>
+          <p className="text-sm text-zinc-400 mt-1">
+            Showing the most active questions from your saved topics, based on current and recent debates.
+          </p>
+        </div>
 
+        {trendingQuestionsEmptyText ? (
+          <p className="text-sm text-zinc-400">{trendingQuestionsEmptyText}</p>
+        ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {trendingQuestions.map((q) => {
               const isSelected = selectedQuestionId === q.id;
@@ -673,9 +812,20 @@ export default function Home() {
                     }
                     className="w-full text-left"
                   >
-                    <p className="text-xs uppercase tracking-wide text-zinc-400 mb-2">
-                      {q.topicName}
-                    </p>
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <p className="text-xs uppercase tracking-wide text-zinc-400">
+                        {q.topicName}
+                      </p>
+
+                      {(q.activeMatches > 0 || q.recentMatches > 0) && (
+                        <span className="rounded-full border border-emerald-500/30 bg-emerald-600/10 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-300">
+                          {q.activeMatches > 0
+                            ? `${q.activeMatches} live`
+                            : `${q.recentMatches} recent`}
+                        </span>
+                      )}
+                    </div>
+
                     <p className="text-base font-medium leading-6">{q.question}</p>
                   </button>
 
@@ -720,8 +870,8 @@ export default function Home() {
               );
             })}
           </div>
-        </section>
-      )}
+        )}
+      </section>
 
       <section className="p-4 border border-zinc-800 rounded-lg bg-zinc-900/50">
         <h2 className="text-lg font-semibold mb-2">Find a debating partner</h2>
