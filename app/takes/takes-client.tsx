@@ -101,9 +101,7 @@ export default function TakesClient() {
   const tab = params.get("tab") || "following";
   const isFollowingTab = useMemo(() => tab !== "explore", [tab]);
 
-  const [allTopics, setAllTopics] = useState<Topic[]>([]);
   const [followed, setFollowed] = useState<Set<number>>(new Set());
-  const [loadingTopics, setLoadingTopics] = useState(false);
 
   const [userId, setUserId] = useState<string | null>(null);
 
@@ -469,42 +467,19 @@ export default function TakesClient() {
     setNotInterestedIds(new Set<string>((data ?? []).map((r: any) => String(r.take_id))));
   }
 
-  /* ---------------- LOAD TOPICS (Explore grid) ---------------- */
-  useEffect(() => {
-    if (!isFollowingTab) loadExploreTopics();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFollowingTab]);
-
-  async function loadExploreTopics() {
-    setLoadingTopics(true);
-
+  /* ---------------- FOLLOWED TOPICS ---------------- */
+  async function loadFollowedTopics() {
     const {
       data: { user },
     } = await supabase.auth.getUser();
 
-    if (!user) {
-      setLoadingTopics(false);
-      return;
-    }
-
-    const { data: topicsData } = await supabase.from("topics").select("id, name").order("name");
+    if (!user) return;
 
     const { data: followedData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
-
-    if (topicsData) {
-      setAllTopics(
-        topicsData.map((t: any) => ({
-          id: Number(t.id),
-          name: t.name,
-        }))
-      );
-    }
 
     if (followedData) {
       setFollowed(new Set(followedData.map((r: any) => Number(r.topic_id))));
     }
-
-    setLoadingTopics(false);
   }
 
   async function toggleFollowTopic(topicId: number) {
@@ -547,15 +522,7 @@ export default function TakesClient() {
       setFeedHasMore(true);
 
       await loadNotInterested();
-
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (user) {
-        const { data: followedData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
-        setFollowed(new Set<number>((followedData ?? []).map((r: any) => Number(r.topic_id))));
-      }
-
+      await loadFollowedTopics();
       await loadFeedFirstPage();
 
       if (isFollowingTab) {
@@ -1611,35 +1578,6 @@ export default function TakesClient() {
           </div>
         )}
       </div>
-
-      {!isFollowingTab && (
-        <div className="mt-6">
-          <h2 className="text-lg font-semibold mb-4">Discover Topics</h2>
-
-          {loadingTopics ? (
-            <p className="text-sm text-zinc-600">Loading topics…</p>
-          ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-              {allTopics.map((topic) => {
-                const isFollowed = followed.has(topic.id);
-
-                return (
-                  <button
-                    key={topic.id}
-                    onClick={() => toggleFollowTopic(topic.id)}
-                    className={`px-4 py-3 rounded-lg border text-sm transition ${
-                      isFollowed ? "bg-black text-white border-black" : "bg-zinc-100 border-zinc-400 hover:bg-zinc-50"
-                    }`}
-                  >
-                    {topic.name}
-                    {isFollowed && <span className="ml-2 text-xs">✓</span>}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Desktop rail (hidden on mobile) */}
       <div className="fixed right-6 top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3">
