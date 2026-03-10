@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
-import { supabase } from "@/lib/supabase";
 
 export default function SiteHeader() {
   const pathname = usePathname();
@@ -10,9 +9,6 @@ export default function SiteHeader() {
   const inRoom = pathname?.startsWith("/room/");
   const inTakes = pathname?.startsWith("/takes");
   const inLive = !inTakes;
-
-  const [sr, setSr] = useState<number | null>(null);
-  const [cr, setCr] = useState<number | null>(null);
 
   // Track takes tab without useSearchParams (avoids Suspense / prerender errors)
   const [takesTab, setTakesTab] = useState<"following" | "explore">("following");
@@ -32,29 +28,6 @@ export default function SiteHeader() {
     return () => window.removeEventListener("popstate", readTab);
   }, [inTakes]);
 
-  useEffect(() => {
-    if (inRoom) return;
-
-    (async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) return;
-
-      const { data } = await supabase
-        .from("profiles")
-        .select("skill_rating, collab_rating")
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (data) {
-        setSr(data.skill_rating);
-        setCr(data.collab_rating);
-      }
-    })();
-  }, [inRoom]);
-
   const headerClass = useMemo(() => {
     if (inRoom) return "bg-zinc-950/80 border-zinc-800";
     if (inTakes) return "bg-zinc-200/80 border-zinc-300 text-zinc-900";
@@ -66,7 +39,6 @@ export default function SiteHeader() {
   return (
     <header className={`sticky top-0 z-50 border-b backdrop-blur ${headerClass}`}>
       <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
-        {/* Left: Brand (not clickable in room) */}
         {inRoom ? (
           <span className="font-semibold cursor-default select-none">Debate.Me</span>
         ) : (
@@ -75,7 +47,6 @@ export default function SiteHeader() {
           </a>
         )}
 
-        {/* Center: Mode switch */}
         {!inRoom && (
           <div className="flex items-center gap-3 text-sm">
             <a
@@ -86,8 +57,8 @@ export default function SiteHeader() {
                     ? "bg-black text-white"
                     : "bg-zinc-900 text-white"
                   : inTakes
-                  ? "text-zinc-700 hover:text-black"
-                  : "text-zinc-400 hover:text-white"
+                    ? "text-zinc-700 hover:text-black"
+                    : "text-zinc-400 hover:text-white"
               }`}
               aria-label="Live Debates"
             >
@@ -110,15 +81,7 @@ export default function SiteHeader() {
           </div>
         )}
 
-        {/* Right: SR/CR + Profile */}
         <nav className="text-sm flex items-center gap-4">
-          {!inRoom && sr !== null && cr !== null && (
-            <span className={inTakes ? "text-zinc-700" : "text-zinc-400"}>
-              SR <strong className={inTakes ? "text-zinc-900" : ""}>{sr}</strong> · CR{" "}
-              <strong className={inTakes ? "text-zinc-900" : ""}>{cr}</strong>
-            </span>
-          )}
-
           {inRoom ? (
             <span className="text-zinc-600 cursor-not-allowed select-none">Profile</span>
           ) : (
@@ -135,7 +98,6 @@ export default function SiteHeader() {
         </nav>
       </div>
 
-      {/* Takes Feed sub-tabs header line (only on /takes) */}
       {!inRoom && inTakes && (
         <div className="mx-auto max-w-6xl px-4 pb-2">
           <div className="flex items-center gap-8 text-sm">
