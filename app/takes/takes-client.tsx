@@ -1336,7 +1336,7 @@ export default function TakesClient() {
   const mobileBtnText = "text-[11px] leading-tight";
 
   return (
-    <div className="min-h-[calc(100vh-120px)] rounded-2xl border border-violet-400/25 bg-violet-700/10 text-zinc-100 p-3 sm:p-4 backdrop-blur-md shadow-[0_0_0_1px_rgba(167,139,250,0.06)]">
+    <div className="min-h-[calc(100vh-120px)] rounded-2xl border border-white/20 bg-black text-zinc-100 p-3 sm:p-4 backdrop-blur-md">
       <TakesTopicsRibbon />
 
       {inviteOpen && activeTake && activeCreatorId && (
@@ -1440,7 +1440,7 @@ export default function TakesClient() {
 
       <div className="mt-4 sm:mt-6 relative">
         {loadingFeed ? (
-          <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-violet-300/20 bg-black/30 backdrop-blur-sm">
+          <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-white/20 bg-black/30 backdrop-blur-sm">
             <div className="text-center">
               <div className="text-2xl font-semibold mb-2 text-white">Loading…</div>
               <p className="text-sm text-white/70">
@@ -1449,7 +1449,7 @@ export default function TakesClient() {
             </div>
           </div>
         ) : feedError ? (
-          <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-violet-300/20 bg-black/30 backdrop-blur-sm">
+          <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-white/20 bg-black/30 backdrop-blur-sm">
             <div className="text-center">
               <div className="text-xl font-semibold mb-2 text-white">Couldn’t load</div>
               <p className="text-sm text-white/70">{feedError}</p>
@@ -1462,7 +1462,7 @@ export default function TakesClient() {
             </div>
           </div>
         ) : visibleList.length === 0 ? (
-          <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-violet-300/20 bg-black/30 backdrop-blur-sm">
+          <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-white/20 bg-black/30 backdrop-blur-sm">
             <div className="text-center">
               <div className="text-2xl font-semibold mb-2 text-white">No takes yet</div>
               <p className="text-sm text-white/70">
@@ -1481,7 +1481,7 @@ export default function TakesClient() {
         ) : (
           <div
             ref={cardRef}
-            className="h-[70vh] rounded-2xl border border-violet-300/25 bg-black/35 overflow-hidden relative touch-none backdrop-blur-sm"
+            className="h-[70vh] rounded-2xl border border-white/20 bg-black/35 overflow-hidden relative touch-none backdrop-blur-sm"
             onPointerDown={onCardPointerDown}
             onPointerMove={onCardPointerMove}
             onPointerUp={onCardPointerUp}

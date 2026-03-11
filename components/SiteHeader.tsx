@@ -8,7 +8,8 @@ export default function SiteHeader() {
 
   const inRoom = pathname?.startsWith("/room/");
   const inTakes = pathname?.startsWith("/takes");
-  const inLive = !inTakes;
+  const inProfile = pathname?.startsWith("/profile");
+  const inLive = !inTakes && !inProfile;
 
   const [takesTab, setTakesTab] = useState<"following" | "explore">("following");
 
@@ -30,22 +31,25 @@ export default function SiteHeader() {
   const headerClass = useMemo(() => {
     if (inRoom) return "bg-zinc-950/80 border-zinc-800 text-zinc-100";
     if (inTakes) return "bg-black/82 border-white/10 text-white";
+    if (inProfile) return "bg-zinc-950/80 border-zinc-800 text-zinc-100";
     return "bg-zinc-950/80 border-zinc-800 text-zinc-100";
-  }, [inRoom, inTakes]);
+  }, [inRoom, inTakes, inProfile]);
 
   const brandClass = inTakes ? "text-white hover:text-white/85" : "hover:text-[var(--brand)]";
 
+  const bubbleBase = "px-2.5 sm:px-3 py-1 rounded-full transition";
+
   const liveLinkClass = inTakes
-    ? `px-2.5 sm:px-3 py-1 rounded-full transition ${
-        inLive ? "bg-white text-black" : "text-white/75 hover:text-white"
-      }`
-    : `px-3 py-1 rounded ${inLive ? "bg-zinc-900 text-white" : "text-zinc-400 hover:text-white"}`;
+    ? `${bubbleBase} ${inLive ? "bg-white/14 text-white border border-white/10" : "text-white/75 hover:text-white"}`
+    : `${bubbleBase} ${inLive ? "bg-zinc-900 text-white border border-white/10" : "text-zinc-400 hover:text-white"}`;
 
   const takesLinkClass = inTakes
-    ? `px-2.5 sm:px-3 py-1 rounded-full transition ${
-        inTakes ? "bg-white/14 text-white border border-white/10" : "text-white/75 hover:text-white"
-      }`
-    : `px-3 py-1 rounded ${inTakes ? "bg-white text-zinc-900 border border-zinc-300" : "text-zinc-400 hover:text-white"}`;
+    ? `${bubbleBase} ${inTakes ? "bg-white/14 text-white border border-white/10" : "text-white/75 hover:text-white"}`
+    : `${bubbleBase} ${inTakes ? "bg-zinc-900 text-white border border-white/10" : "text-zinc-400 hover:text-white"}`;
+
+  const profileLinkClass = inTakes
+    ? `${bubbleBase} ${inProfile ? "bg-white/14 text-white border border-white/10" : "text-white/85 hover:text-white"}`
+    : `${bubbleBase} ${inProfile ? "bg-zinc-900 text-white border border-white/10" : "text-zinc-300 hover:text-white"}`;
 
   return (
     <header className={`sticky top-0 z-50 border-b backdrop-blur-md ${headerClass}`}>
@@ -85,15 +89,7 @@ export default function SiteHeader() {
                 Profile
               </span>
             ) : (
-              <a
-                className={
-                  inTakes
-                    ? "text-white/85 hover:text-white text-sm"
-                    : "text-zinc-300 hover:text-white text-sm"
-                }
-                href="/profile"
-                aria-label="Profile"
-              >
+              <a className={profileLinkClass} href="/profile" aria-label="Profile">
                 Profile
               </a>
             )}
