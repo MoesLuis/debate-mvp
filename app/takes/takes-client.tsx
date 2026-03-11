@@ -21,7 +21,6 @@ type TakeRow = {
   is_challengeable?: boolean | null;
   topics?: { name: string }[] | null;
 
-  // When coming from RPC we may get this instead of nested topics join
   topic_name?: string | null;
 };
 
@@ -102,53 +101,42 @@ export default function TakesClient() {
   const isFollowingTab = useMemo(() => tab !== "explore", [tab]);
 
   const [followed, setFollowed] = useState<Set<number>>(new Set());
-
   const [userId, setUserId] = useState<string | null>(null);
 
-  // Feed takes (root + responses)
   const [takes, setTakes] = useState<TakeRow[]>([]);
   const [loadingFeed, setLoadingFeed] = useState(false);
   const [feedError, setFeedError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
-  // Infinite loading
   const [feedHasMore, setFeedHasMore] = useState(true);
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
   const [feedCursorCreatedAt, setFeedCursorCreatedAt] = useState<string | null>(null);
 
-  // Not interested IDs
   const [notInterestedIds, setNotInterestedIds] = useState<Set<string>>(new Set());
 
-  // Thread browsing
   const [viewMode, setViewMode] = useState<ViewMode>({ kind: "feed" });
   const [threadTakes, setThreadTakes] = useState<TakeRow[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
   const [threadIndex, setThreadIndex] = useState(0);
 
-  // Show original
   const [originalTake, setOriginalTake] = useState<TakeRow | null>(null);
   const [loadingOriginal, setLoadingOriginal] = useState(false);
 
-  // Reactions
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState<number>(0);
   const [likingBusy, setLikingBusy] = useState(false);
 
-  // Join picker
   const [joinPickerOpen, setJoinPickerOpen] = useState(false);
   const [joinRootId, setJoinRootId] = useState<string | null>(null);
 
-  // Video playback
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsInstanceRef = useRef<any>(null);
   const [videoLoading, setVideoLoading] = useState(true);
 
-  // Follow user (profile check)
   const [isFollowingCreator, setIsFollowingCreator] = useState(false);
   const [followUserBusy, setFollowUserBusy] = useState(false);
 
-  // Swipe / gestures
   const cardRef = useRef<HTMLDivElement | null>(null);
   const pointerIdRef = useRef<number | null>(null);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -194,23 +182,22 @@ export default function TakesClient() {
     return followed.has(activeTopicId);
   }, [followed, activeTopicId]);
 
-  /* =========================================================================================
-     LIVE INVITES (Phase 8 - Option 1)
-     ========================================================================================= */
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
   const [opponentHandle, setOpponentHandle] = useState<string | null>(null);
 
-  // IMPORTANT: use same stance values as your app: "pro" | "against"
   const [challengerStance, setChallengerStance] = useState<"pro" | "against">("against");
 
   const [inviteQuestionText, setInviteQuestionText] = useState<string | null>(null);
   const [inviteQuestionId, setInviteQuestionId] = useState<number | null>(null);
 
   async function fetchTakeQuestionForInvite(takeId: string) {
-    // Fetch question info directly from takes -> questions
-    const { data, error } = await supabase.from("takes").select("question_id, questions(question)").eq("id", takeId).maybeSingle();
+    const { data, error } = await supabase
+      .from("takes")
+      .select("question_id, questions(question)")
+      .eq("id", takeId)
+      .maybeSingle();
 
     if (error) {
       console.warn("fetchTakeQuestionForInvite error", error);
@@ -218,7 +205,7 @@ export default function TakesClient() {
     }
 
     const questionId = (data as any)?.question_id ?? null;
-    const questionText = (data as any)?.questions?.question ?? null; // supabase may return object for single join
+    const questionText = (data as any)?.questions?.question ?? null;
 
     return { questionId, questionText };
   }
@@ -246,12 +233,14 @@ export default function TakesClient() {
     setInviteQuestionId(null);
     setInviteOpen(true);
 
-    // Load opponent handle for display
-    const { data: prof } = await supabase.from("profiles").select("handle").eq("user_id", activeCreatorId).maybeSingle();
+    const { data: prof } = await supabase
+      .from("profiles")
+      .select("handle")
+      .eq("user_id", activeCreatorId)
+      .maybeSingle();
 
     if (prof?.handle) setOpponentHandle(prof.handle);
 
-    // Load question text for display + include question_id in invite
     const q = await fetchTakeQuestionForInvite(activeTake.id);
     setInviteQuestionId(q.questionId);
     setInviteQuestionText(q.questionText);
@@ -272,7 +261,6 @@ export default function TakesClient() {
     setInviteBusy(true);
     setInviteMsg(null);
 
-    // Ensure question_id/text loaded (even if modal opened before data came back)
     let qid = inviteQuestionId;
 
     if (qid == null && activeTake?.id) {
@@ -287,9 +275,9 @@ export default function TakesClient() {
       to_user_id: activeCreatorId,
       take_id: activeTake.id,
       topic_id: activeTopicId,
-      question_id: qid, // used for inbox join display
-      creator_stance: activeTake.stance ?? null, // stance of the TAKE CREATOR (recipient)
-      challenger_stance: challengerStance, // stance of the CHALLENGER (sender)
+      question_id: qid,
+      creator_stance: activeTake.stance ?? null,
+      challenger_stance: challengerStance,
       status: "pending",
     };
 
@@ -307,10 +295,6 @@ export default function TakesClient() {
 
     window.setTimeout(() => setInviteOpen(false), 900);
   }
-
-  /* =========================================================================================
-     WATCH / COMPLETION TRACKING (writes into take_watch_events)
-     ========================================================================================= */
 
   const watchSessionRef = useRef<{
     takeId: string;
@@ -432,7 +416,6 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* ---------------- USER ---------------- */
   useEffect(() => {
     (async () => {
       const {
@@ -442,7 +425,6 @@ export default function TakesClient() {
     })();
   }, []);
 
-  /* ---------------- LOAD NOT INTERESTED ---------------- */
   async function loadNotInterested() {
     const {
       data: { user },
@@ -467,7 +449,6 @@ export default function TakesClient() {
     setNotInterestedIds(new Set<string>((data ?? []).map((r: any) => String(r.take_id))));
   }
 
-  /* ---------------- FOLLOWED TOPICS ---------------- */
   async function loadFollowedTopics() {
     const {
       data: { user },
@@ -475,7 +456,10 @@ export default function TakesClient() {
 
     if (!user) return;
 
-    const { data: followedData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
+    const { data: followedData } = await supabase
+      .from("user_topics")
+      .select("topic_id")
+      .eq("user_id", user.id);
 
     if (followedData) {
       setFollowed(new Set(followedData.map((r: any) => Number(r.topic_id))));
@@ -490,7 +474,11 @@ export default function TakesClient() {
     if (!user) return;
 
     if (followed.has(topicId)) {
-      await supabase.from("user_topics").delete().eq("user_id", user.id).eq("topic_id", topicId);
+      await supabase
+        .from("user_topics")
+        .delete()
+        .eq("user_id", user.id)
+        .eq("topic_id", topicId);
 
       setFollowed((prev) => {
         const next = new Set(prev);
@@ -507,7 +495,6 @@ export default function TakesClient() {
     }
   }
 
-  /* ---------------- FEED LOADERS (RPC) ---------------- */
   useEffect(() => {
     let channel: any;
 
@@ -528,19 +515,23 @@ export default function TakesClient() {
       if (isFollowingTab) {
         channel = supabase
           .channel("takes-feed-following-refresh")
-          .on("postgres_changes", { event: "*", schema: "public", table: "user_follow_users" }, async () => {
-            setViewMode({ kind: "feed" });
-            setThreadTakes([]);
-            setThreadIndex(0);
-            setOriginalTake(null);
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "user_follow_users" },
+            async () => {
+              setViewMode({ kind: "feed" });
+              setThreadTakes([]);
+              setThreadIndex(0);
+              setOriginalTake(null);
 
-            setActiveIndex(0);
-            setFeedCursorCreatedAt(null);
-            setFeedHasMore(true);
+              setActiveIndex(0);
+              setFeedCursorCreatedAt(null);
+              setFeedHasMore(true);
 
-            await loadNotInterested();
-            await loadFeedFirstPage();
-          })
+              await loadNotInterested();
+              await loadFeedFirstPage();
+            }
+          )
           .subscribe();
       }
     }
@@ -554,8 +545,13 @@ export default function TakesClient() {
   }, [isFollowingTab]);
 
   function normalizeTopicsField(r: any): TakeRow {
-    const topicsNormalized =
-      Array.isArray(r.topics) ? r.topics : r.topics ? [r.topics] : r.topic_name ? [{ name: r.topic_name }] : null;
+    const topicsNormalized = Array.isArray(r.topics)
+      ? r.topics
+      : r.topics
+      ? [r.topics]
+      : r.topic_name
+      ? [{ name: r.topic_name }]
+      : null;
 
     return {
       ...(r as TakeRow),
@@ -583,7 +579,10 @@ export default function TakesClient() {
       return;
     }
 
-    const { data: followedTopicsData } = await supabase.from("user_topics").select("topic_id").eq("user_id", user.id);
+    const { data: followedTopicsData } = await supabase
+      .from("user_topics")
+      .select("topic_id")
+      .eq("user_id", user.id);
     setFollowed(new Set<number>((followedTopicsData ?? []).map((r: any) => Number(r.topic_id))));
 
     const p_tab = isFollowingTab ? "following" : "explore";
@@ -598,7 +597,9 @@ export default function TakesClient() {
 
     if (error) {
       console.error("get_ranked_feed error", error);
-      setFeedError(isFollowingTab ? "Could not load following feed." : "Could not load explore feed.");
+      setFeedError(
+        isFollowingTab ? "Could not load following feed." : "Could not load explore feed."
+      );
       setTakes([]);
       setLoadingFeed(false);
       return;
@@ -669,7 +670,6 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeIndex, takes.length, showingThread, showingOriginal]);
 
-  /* ---------------- NOT INTERESTED ---------------- */
   async function markNotInterested(takeId: string) {
     const {
       data: { user },
@@ -698,7 +698,6 @@ export default function TakesClient() {
     }
   }
 
-  /* ---------------- THREAD LOADERS ---------------- */
   async function openThread(rootTakeId: string, stance: "against" | "for", entryTakeId: string) {
     setViewMode({ kind: "thread", rootTakeId, stance, entryTakeId });
     setThreadError(null);
@@ -707,14 +706,18 @@ export default function TakesClient() {
 
     let query = supabase
       .from("takes")
-      .select("id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)")
+      .select(
+        "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+      )
       .eq("status", "ready")
       .eq("parent_take_id", rootTakeId)
       .order("created_at", { ascending: false })
       .limit(50);
 
     const { data, error } =
-      stance === "against" ? await query.eq("stance", "against") : await query.or("stance.is.null,stance.neq.against");
+      stance === "against"
+        ? await query.eq("stance", "against")
+        : await query.or("stance.is.null,stance.neq.against");
 
     if (error) {
       setThreadError("Could not load replies.");
@@ -741,7 +744,6 @@ export default function TakesClient() {
     else setActiveIndex(0);
   }
 
-  /* ---------------- ORIGINAL (ROOT) LOADER ---------------- */
   async function showOriginal() {
     if (!activeTake) return;
     const rootId = activeTake.parent_take_id;
@@ -752,7 +754,9 @@ export default function TakesClient() {
 
     const { data, error } = await supabase
       .from("takes")
-      .select("id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)")
+      .select(
+        "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+      )
       .eq("id", rootId)
       .maybeSingle();
 
@@ -779,7 +783,6 @@ export default function TakesClient() {
     else setActiveIndex(0);
   }
 
-  /* ---------------- VIDEO ATTACH ---------------- */
   useEffect(() => {
     setVideoLoading(true);
 
@@ -858,7 +861,6 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTake?.id]);
 
-  /* ---------------- NAV (feed + thread) ---------------- */
   function nextRaw() {
     if (showingOriginal) return;
 
@@ -962,7 +964,6 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showingThread, showingOriginal, takes.length, threadTakes.length, activeIndex, threadIndex]);
 
-  /* ---------------- REACTIONS ---------------- */
   useEffect(() => {
     setLiked(false);
     setLikeCount(0);
@@ -970,12 +971,20 @@ export default function TakesClient() {
     async function loadReactions() {
       if (!activeTake?.id) return;
 
-      const { count } = await supabase.from("take_reactions").select("take_id", { count: "exact", head: true }).eq("take_id", activeTake.id);
+      const { count } = await supabase
+        .from("take_reactions")
+        .select("take_id", { count: "exact", head: true })
+        .eq("take_id", activeTake.id);
 
       setLikeCount(count ?? 0);
 
       if (!userId) return;
-      const { data } = await supabase.from("take_reactions").select("take_id").eq("take_id", activeTake.id).eq("user_id", userId).maybeSingle();
+      const { data } = await supabase
+        .from("take_reactions")
+        .select("take_id")
+        .eq("take_id", activeTake.id)
+        .eq("user_id", userId)
+        .maybeSingle();
 
       setLiked(!!data);
     }
@@ -1000,7 +1009,11 @@ export default function TakesClient() {
 
     try {
       if (liked) {
-        const { error } = await supabase.from("take_reactions").delete().eq("take_id", activeTake.id).eq("user_id", user.id);
+        const { error } = await supabase
+          .from("take_reactions")
+          .delete()
+          .eq("take_id", activeTake.id)
+          .eq("user_id", user.id);
 
         if (!error) {
           setLiked(false);
@@ -1022,7 +1035,6 @@ export default function TakesClient() {
     }
   }
 
-  /* ---------------- FOLLOW USER (creator) ---------------- */
   useEffect(() => {
     (async () => {
       if (!userId || !activeCreatorId) {
@@ -1062,7 +1074,11 @@ export default function TakesClient() {
     setFollowUserBusy(true);
     try {
       if (isFollowingCreator) {
-        const { error } = await supabase.from("user_follow_users").delete().eq("follower_id", userId).eq("following_id", targetUserId);
+        const { error } = await supabase
+          .from("user_follow_users")
+          .delete()
+          .eq("follower_id", userId)
+          .eq("following_id", targetUserId);
         if (!error) setIsFollowingCreator(false);
       } else {
         const { error } = await supabase.from("user_follow_users").insert({
@@ -1076,7 +1092,6 @@ export default function TakesClient() {
     }
   }
 
-  /* ---------------- THREAD BROWSING BUTTONS ---------------- */
   async function handleAgainst() {
     if (!activeTake?.id || !activeRootId) return;
 
@@ -1099,7 +1114,6 @@ export default function TakesClient() {
     await openThread(activeRootId, "for", activeTake.id);
   }
 
-  /* ---------------- JOIN TAKE ---------------- */
   function openJoinPicker() {
     if (!activeRootId) return;
     setJoinRootId(activeRootId);
@@ -1114,7 +1128,6 @@ export default function TakesClient() {
 
   const showShowOriginalButton = !!activeTake?.parent_take_id && !showingOriginal;
 
-  /* ---------------- SWIPE / SCROLL (feed only) ---------------- */
   function resetGesture() {
     setDragging(false);
     setGestureLock("none");
@@ -1303,20 +1316,17 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTake?.id]);
 
-  /* ---------------- PROFILE NAV ---------------- */
   function goToCreatorProfile() {
     if (!activeCreatorId) return;
     if (userId && activeCreatorId === userId) router.push("/profile");
     else router.push(`/u/${activeCreatorId}`);
   }
 
-  // Mobile “glass” style helpers
   const mobileOutlineStyle: React.CSSProperties = {
     textShadow:
       "0 1px 2px rgba(0,0,0,0.95), 0 -1px 2px rgba(0,0,0,0.95), 1px 0 2px rgba(0,0,0,0.95), -1px 0 2px rgba(0,0,0,0.95)",
   };
 
-  // Position above Safari bottom bar / home indicator
   const mobileRailStyle: React.CSSProperties = {
     bottom: "calc(0.5rem + env(safe-area-inset-bottom))",
   };
@@ -1326,10 +1336,9 @@ export default function TakesClient() {
   const mobileBtnText = "text-[11px] leading-tight";
 
   return (
-    <div className="min-h-[calc(100vh-120px)] rounded-lg border border-zinc-300 bg-zinc-200 text-zinc-900 p-4">
+    <div className="min-h-[calc(100vh-120px)] rounded-2xl border border-violet-400/25 bg-violet-700/10 text-zinc-100 p-3 sm:p-4 backdrop-blur-md shadow-[0_0_0_1px_rgba(167,139,250,0.06)]">
       <TakesTopicsRibbon />
 
-      {/* LIVE INVITE MODAL */}
       {inviteOpen && activeTake && activeCreatorId && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
           <div className="w-full max-w-md rounded-lg border border-zinc-300 bg-white p-4">
@@ -1337,7 +1346,8 @@ export default function TakesClient() {
 
             <div className="mt-2 text-sm text-zinc-700 space-y-1">
               <div>
-                <span className="font-medium">Opponent:</span> {opponentHandle ? `@${opponentHandle}` : activeCreatorId.slice(0, 8) + "…"}
+                <span className="font-medium">Opponent:</span>{" "}
+                {opponentHandle ? `@${opponentHandle}` : activeCreatorId.slice(0, 8) + "…"}
               </div>
               <div>
                 <span className="font-medium">Topic:</span> {activeTopicName}
@@ -1348,7 +1358,9 @@ export default function TakesClient() {
 
               {inviteQuestionText && (
                 <div className="mt-2 rounded border border-zinc-200 bg-zinc-50 p-2 text-sm text-zinc-800">
-                  <div className="text-[11px] uppercase tracking-wide text-zinc-500">Question</div>
+                  <div className="text-[11px] uppercase tracking-wide text-zinc-500">
+                    Question
+                  </div>
                   <div className="mt-1">{inviteQuestionText}</div>
                 </div>
               )}
@@ -1366,7 +1378,9 @@ export default function TakesClient() {
                 <option value="against">Against</option>
               </select>
 
-              <p className="mt-2 text-xs text-zinc-500">This sends a private invite. They’ll accept/decline from their Inbox.</p>
+              <p className="mt-2 text-xs text-zinc-500">
+                This sends a private invite. They’ll accept/decline from their Inbox.
+              </p>
             </div>
 
             {inviteMsg && <div className="mt-3 text-sm text-zinc-800">{inviteMsg}</div>}
@@ -1391,15 +1405,19 @@ export default function TakesClient() {
         </div>
       )}
 
-      {/* JOIN PICKER MODAL */}
       {joinPickerOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <div className="w-full max-w-sm rounded-lg border border-zinc-300 bg-white p-4">
             <div className="text-lg font-semibold">Join this take</div>
-            <p className="text-sm text-zinc-600 mt-1">Choose how you’re replying to the original take:</p>
+            <p className="text-sm text-zinc-600 mt-1">
+              Choose how you’re replying to the original take:
+            </p>
 
             <div className="mt-4 grid grid-cols-2 gap-3">
-              <button onClick={() => joinTake("pro")} className="px-4 py-3 rounded bg-black text-white text-sm hover:opacity-90">
+              <button
+                onClick={() => joinTake("pro")}
+                className="px-4 py-3 rounded bg-black text-white text-sm hover:opacity-90"
+              >
                 In favor
               </button>
               <button
@@ -1420,34 +1438,42 @@ export default function TakesClient() {
         </div>
       )}
 
-      {/* FEED AREA */}
-      <div className="mt-6 relative">
+      <div className="mt-4 sm:mt-6 relative">
         {loadingFeed ? (
-          <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
+          <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-violet-300/20 bg-black/30 backdrop-blur-sm">
             <div className="text-center">
-              <div className="text-2xl font-semibold mb-2">Loading…</div>
-              <p className="text-sm text-zinc-600">{isFollowingTab ? "Pulling takes from users you follow" : "Exploring all takes"}</p>
+              <div className="text-2xl font-semibold mb-2 text-white">Loading…</div>
+              <p className="text-sm text-white/70">
+                {isFollowingTab ? "Pulling takes from users you follow" : "Exploring all takes"}
+              </p>
             </div>
           </div>
         ) : feedError ? (
-          <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
+          <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-violet-300/20 bg-black/30 backdrop-blur-sm">
             <div className="text-center">
-              <div className="text-xl font-semibold mb-2">Couldn’t load</div>
-              <p className="text-sm text-zinc-600">{feedError}</p>
+              <div className="text-xl font-semibold mb-2 text-white">Couldn’t load</div>
+              <p className="text-sm text-white/70">{feedError}</p>
               <button
                 onClick={() => loadFeedFirstPage()}
-                className="mt-4 px-4 py-2 rounded border border-zinc-400 bg-white hover:bg-zinc-50 text-sm"
+                className="mt-4 px-4 py-2 rounded border border-white/20 bg-white/10 hover:bg-white/15 text-sm text-white"
               >
                 Retry
               </button>
             </div>
           </div>
         ) : visibleList.length === 0 ? (
-          <div className="flex items-center justify-center h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100">
+          <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-violet-300/20 bg-black/30 backdrop-blur-sm">
             <div className="text-center">
-              <div className="text-2xl font-semibold mb-2">No takes yet</div>
-              <p className="text-sm text-zinc-600">{isFollowingTab ? "Follow some users to see their takes here." : "Record the first take for any topic."}</p>
-              <button onClick={() => router.push("/takes/record")} className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90">
+              <div className="text-2xl font-semibold mb-2 text-white">No takes yet</div>
+              <p className="text-sm text-white/70">
+                {isFollowingTab
+                  ? "Follow some users to see their takes here."
+                  : "Record the first take for any topic."}
+              </p>
+              <button
+                onClick={() => router.push("/takes/record")}
+                className="mt-4 px-4 py-2 rounded bg-black text-white text-sm hover:opacity-90"
+              >
                 Record a take
               </button>
             </div>
@@ -1455,7 +1481,7 @@ export default function TakesClient() {
         ) : (
           <div
             ref={cardRef}
-            className="h-[70vh] rounded-lg border border-zinc-300 bg-zinc-100 overflow-hidden relative touch-none"
+            className="h-[70vh] rounded-2xl border border-violet-300/25 bg-black/35 overflow-hidden relative touch-none backdrop-blur-sm"
             onPointerDown={onCardPointerDown}
             onPointerMove={onCardPointerMove}
             onPointerUp={onCardPointerUp}
@@ -1466,7 +1492,12 @@ export default function TakesClient() {
               className="absolute inset-0"
               style={{
                 transform: `translate3d(${dragX}px, ${dragY}px, 0)`,
-                transition: animateTransition === "none" ? "none" : dragging ? "none" : "transform 200ms ease",
+                transition:
+                  animateTransition === "none"
+                    ? "none"
+                    : dragging
+                    ? "none"
+                    : "transform 200ms ease",
                 willChange: "transform",
               }}
             >
@@ -1474,7 +1505,9 @@ export default function TakesClient() {
                 key={activeTake?.id}
                 ref={videoRef}
                 loop
-                className={`w-full h-full object-contain bg-black transition-opacity ${videoLoading ? "opacity-0" : "opacity-100"}`}
+                className={`w-full h-full object-contain bg-black transition-opacity ${
+                  videoLoading ? "opacity-0" : "opacity-100"
+                }`}
                 playsInline
                 controls
                 onLoadedData={() => setVideoLoading(false)}
@@ -1496,7 +1529,9 @@ export default function TakesClient() {
                         toggleFollowTopic(activeTopicId);
                       }}
                       className={`px-2 py-1 rounded-full text-xs border transition ${
-                        isTopicFollowed ? "bg-emerald-600/15 text-white border-emerald-500/30 hover:bg-emerald-600/20" : "bg-transparent text-white border-white/60 hover:border-white"
+                        isTopicFollowed
+                          ? "bg-emerald-600/15 text-white border-emerald-500/30 hover:bg-emerald-600/20"
+                          : "bg-transparent text-white border-white/60 hover:border-white"
                       }`}
                       title={isTopicFollowed ? "Unfollow topic" : "Follow topic"}
                       data-no-gesture="true"
@@ -1509,7 +1544,9 @@ export default function TakesClient() {
                   )}
 
                   {showingThread ? <span className="text-xs opacity-80">(thread)</span> : null}
-                  {showingOriginal ? <span className="text-xs opacity-80">(original)</span> : null}
+                  {showingOriginal ? (
+                    <span className="text-xs opacity-80">(original)</span>
+                  ) : null}
                 </div>
 
                 <div className="text-xs opacity-80">
@@ -1517,7 +1554,11 @@ export default function TakesClient() {
                 </div>
 
                 {showShowOriginalButton && (
-                  <button onClick={showOriginal} className="mt-2 text-xs underline opacity-90 hover:opacity-100" data-no-gesture="true">
+                  <button
+                    onClick={showOriginal}
+                    className="mt-2 text-xs underline opacity-90 hover:opacity-100"
+                    data-no-gesture="true"
+                  >
                     {loadingOriginal ? "Loading original…" : "Show original"}
                   </button>
                 )}
@@ -1566,20 +1607,23 @@ export default function TakesClient() {
               )}
 
               {viewMode.kind === "feed" && feedLoadingMore && (
-                <div className="absolute right-4 bottom-4 bg-black/60 text-white px-3 py-2 rounded text-xs">Loading more…</div>
+                <div className="absolute right-4 bottom-4 bg-black/60 text-white px-3 py-2 rounded text-xs">
+                  Loading more…
+                </div>
               )}
             </div>
 
             {viewMode.kind === "feed" && (
               <div className="absolute inset-0 flex items-center justify-end pr-6 pointer-events-none">
-                <div className="bg-black/60 text-white px-4 py-2 rounded-lg text-sm">Not interested</div>
+                <div className="bg-black/60 text-white px-4 py-2 rounded-lg text-sm">
+                  Not interested
+                </div>
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* Desktop rail (hidden on mobile) */}
       <div className="fixed right-6 top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3">
         <button
           onClick={() => {
@@ -1594,7 +1638,11 @@ export default function TakesClient() {
         </button>
 
         <div className="relative w-14 h-14">
-          <button onClick={goToCreatorProfile} className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs" data-no-gesture="true">
+          <button
+            onClick={goToCreatorProfile}
+            className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs"
+            data-no-gesture="true"
+          >
             Profile
           </button>
 
@@ -1606,7 +1654,9 @@ export default function TakesClient() {
               }}
               disabled={followUserBusy}
               className={`absolute -right-1 -bottom-1 w-6 h-6 rounded-full border text-[12px] flex items-center justify-center shadow ${
-                isFollowingCreator ? "bg-emerald-500 text-white border-emerald-600" : "bg-white text-emerald-700 border-emerald-300"
+                isFollowingCreator
+                  ? "bg-emerald-500 text-white border-emerald-600"
+                  : "bg-white text-emerald-700 border-emerald-300"
               } ${followUserBusy ? "opacity-60" : ""}`}
               title={isFollowingCreator ? "Unfollow user" : "Follow user"}
               aria-label={isFollowingCreator ? "Unfollow user" : "Follow user"}
@@ -1630,7 +1680,9 @@ export default function TakesClient() {
         <button
           onClick={toggleLike}
           disabled={!activeTake?.id || likingBusy}
-          className={`w-14 h-14 rounded border border-zinc-400 text-xs disabled:opacity-50 ${liked ? "bg-black text-white" : "bg-zinc-100"}`}
+          className={`w-14 h-14 rounded border border-zinc-400 text-xs disabled:opacity-50 ${
+            liked ? "bg-black text-white" : "bg-zinc-100"
+          }`}
           title="React"
           data-no-gesture="true"
         >
@@ -1684,7 +1736,6 @@ export default function TakesClient() {
         </button>
       </div>
 
-      {/* Mobile glass rail (over video) */}
       <div className="fixed right-3 z-40 md:hidden flex flex-col gap-2" style={mobileRailStyle}>
         <button
           onClick={() => {
@@ -1695,10 +1746,17 @@ export default function TakesClient() {
           title={showingOriginal ? "Back to thread" : showingThread ? "Back" : "Topic"}
           data-no-gesture="true"
         >
-          <span style={mobileOutlineStyle}>{showingOriginal ? "Back" : showingThread ? "Back" : "Topic"}</span>
+          <span style={mobileOutlineStyle}>
+            {showingOriginal ? "Back" : showingThread ? "Back" : "Topic"}
+          </span>
         </button>
 
-        <button onClick={goToCreatorProfile} className={`${mobileBtnBase} ${mobileBtnText} relative`} data-no-gesture="true" title="Profile">
+        <button
+          onClick={goToCreatorProfile}
+          className={`${mobileBtnBase} ${mobileBtnText} relative`}
+          data-no-gesture="true"
+          title="Profile"
+        >
           <span style={mobileOutlineStyle}>Profile</span>
 
           {userId && activeCreatorId && activeCreatorId !== userId && (
@@ -1709,7 +1767,9 @@ export default function TakesClient() {
               }}
               disabled={followUserBusy}
               className={`absolute -right-1 -bottom-1 w-6 h-6 rounded-full border text-[12px] flex items-center justify-center shadow ${
-                isFollowingCreator ? "bg-emerald-500/90 text-white border-emerald-200/60" : "bg-white/80 text-emerald-800 border-emerald-200/60"
+                isFollowingCreator
+                  ? "bg-emerald-500/90 text-white border-emerald-200/60"
+                  : "bg-white/80 text-emerald-800 border-emerald-200/60"
               } ${followUserBusy ? "opacity-60" : ""}`}
               title={isFollowingCreator ? "Unfollow user" : "Follow user"}
               aria-label={isFollowingCreator ? "Unfollow user" : "Follow user"}
@@ -1761,7 +1821,12 @@ export default function TakesClient() {
         </button>
 
         {activeTake?.is_challengeable ? (
-          <button onClick={openInviteModal} className={`${mobileBtnBase} ${mobileBtnText}`} title="Challenge to a live debate" data-no-gesture="true">
+          <button
+            onClick={openInviteModal}
+            className={`${mobileBtnBase} ${mobileBtnText}`}
+            title="Challenge to a live debate"
+            data-no-gesture="true"
+          >
             <div className="flex flex-col items-center justify-center">
               <span style={mobileOutlineStyle}>Live</span>
               <span className="text-[10px] opacity-90" style={mobileOutlineStyle}>
@@ -1789,7 +1854,10 @@ export default function TakesClient() {
           data-no-gesture="true"
           title="Record take"
         >
-          <div className="flex flex-col items-center justify-center text-[11px] leading-tight" style={mobileOutlineStyle}>
+          <div
+            className="flex flex-col items-center justify-center text-[11px] leading-tight"
+            style={mobileOutlineStyle}
+          >
             <div>Record</div>
             <div>take</div>
           </div>
