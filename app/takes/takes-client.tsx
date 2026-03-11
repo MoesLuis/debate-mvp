@@ -1577,7 +1577,7 @@ export default function TakesClient() {
               {showingThread && (
                 <button
                   onClick={backToEntryInThread}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm"
+                  className="absolute left-4 top-1/2 -translate-y-1/2 px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm text-zinc-900"
                   title="Back to the take you started from"
                   data-no-gesture="true"
                 >
@@ -1590,7 +1590,7 @@ export default function TakesClient() {
                   <button
                     onClick={animateToPrev}
                     disabled={!canGoPrev() || animating}
-                    className="px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm disabled:opacity-50"
+                    className="px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm text-zinc-900 disabled:opacity-50"
                     data-no-gesture="true"
                   >
                     ↑ Prev
@@ -1598,7 +1598,7 @@ export default function TakesClient() {
                   <button
                     onClick={animateToNext}
                     disabled={!canGoNext() || animating}
-                    className="px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm disabled:opacity-50"
+                    className="px-3 py-2 rounded bg-white/90 border border-zinc-300 text-sm text-zinc-900 disabled:opacity-50"
                     data-no-gesture="true"
                   >
                     ↓ Next
@@ -1616,7 +1616,7 @@ export default function TakesClient() {
             {viewMode.kind === "feed" && (
               <div className="absolute inset-0 flex items-center justify-end pr-6 pointer-events-none">
                 <div className="bg-black/60 text-white px-4 py-2 rounded-lg text-sm">
-                  Not interested
+                  ← Not interested
                 </div>
               </div>
             )}
@@ -1630,7 +1630,7 @@ export default function TakesClient() {
             if (showingOriginal) backToThreadFromOriginal();
             if (showingThread) backToEntryInThread();
           }}
-          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs"
+          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-zinc-900 text-xs"
           title={showingOriginal ? "Back to thread" : showingThread ? "Back" : "Topic"}
           data-no-gesture="true"
         >
@@ -1640,7 +1640,7 @@ export default function TakesClient() {
         <div className="relative w-14 h-14">
           <button
             onClick={goToCreatorProfile}
-            className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs"
+            className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-zinc-900 text-xs"
             data-no-gesture="true"
           >
             Profile
@@ -1670,7 +1670,7 @@ export default function TakesClient() {
         <button
           onClick={handleAgainst}
           disabled={!activeTake?.id || !activeRootId}
-          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs disabled:opacity-50"
+          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-zinc-900 text-xs disabled:opacity-50"
           title="Browse against replies (latest → next)"
           data-no-gesture="true"
         >
@@ -1681,7 +1681,7 @@ export default function TakesClient() {
           onClick={toggleLike}
           disabled={!activeTake?.id || likingBusy}
           className={`w-14 h-14 rounded border border-zinc-400 text-xs disabled:opacity-50 ${
-            liked ? "bg-black text-white" : "bg-zinc-100"
+            liked ? "bg-black text-white" : "bg-zinc-100 text-zinc-900"
           }`}
           title="React"
           data-no-gesture="true"
@@ -1693,7 +1693,7 @@ export default function TakesClient() {
         <button
           onClick={openJoinPicker}
           disabled={!activeRootId}
-          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs disabled:opacity-50"
+          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-zinc-900 text-xs disabled:opacity-50"
           title="Reply to the original take"
           data-no-gesture="true"
         >
@@ -1704,7 +1704,7 @@ export default function TakesClient() {
         {activeTake?.is_challengeable ? (
           <button
             onClick={openInviteModal}
-            className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-[11px]"
+            className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-zinc-900 text-[11px]"
             title="Challenge to a live debate"
             data-no-gesture="true"
           >
@@ -1718,7 +1718,7 @@ export default function TakesClient() {
         <button
           onClick={handleInFavor}
           disabled={!activeTake?.id || !activeRootId}
-          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-xs disabled:opacity-50"
+          className="w-14 h-14 rounded border border-zinc-400 bg-zinc-100 text-zinc-900 text-xs disabled:opacity-50"
           title="Browse in-favor replies (latest → next)"
           data-no-gesture="true"
         >

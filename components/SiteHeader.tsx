@@ -37,7 +37,8 @@ export default function SiteHeader() {
 
   const brandClass = inTakes ? "text-white hover:text-white/85" : "hover:text-[var(--brand)]";
 
-  const bubbleBase = "px-2.5 sm:px-3 py-1 rounded-full transition";
+  const bubbleBase =
+    "inline-flex items-center justify-center text-center leading-none px-2.5 sm:px-3 py-1 rounded-full transition whitespace-nowrap";
 
   const liveLinkClass = inTakes
     ? `${bubbleBase} ${inLive ? "bg-white/14 text-white border border-white/10" : "text-white/75 hover:text-white"}`
