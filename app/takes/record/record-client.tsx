@@ -585,7 +585,7 @@ export default function RecordTakeClient() {
                   : "bg-zinc-300 text-zinc-600 cursor-not-allowed"
               }`}
             >
-              Upload to Mux
+              Upload
             </button>
 
             {/* Countdown */}
