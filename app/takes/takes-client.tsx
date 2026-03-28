@@ -607,6 +607,16 @@ export default function TakesClient() {
     } = await supabase.auth.getUser();
 
     if (!user) {
+      if (isFollowingTab) {
+        setTakes([]);
+        setActiveIndex(0);
+        setFeedCursorCreatedAt(null);
+        setFeedHasMore(false);
+        setFeedError("Please sign in to follow users.");
+        setLoadingFeed(false);
+        return;
+      }
+
       const { data, error } = await loadGuestFeedPage(null);
 
       if (error) {
@@ -677,6 +687,11 @@ export default function TakesClient() {
     } = await supabase.auth.getUser();
 
     if (!user) {
+      if (isFollowingTab) {
+        setFeedLoadingMore(false);
+        return;
+      }
+
       const { data, error } = await loadGuestFeedPage(feedCursorCreatedAt);
 
       if (error) {
@@ -1533,13 +1548,19 @@ export default function TakesClient() {
         ) : feedError ? (
           <div className="flex items-center justify-center h-[70vh] rounded-2xl border border-white/20 bg-black/30 backdrop-blur-sm">
             <div className="text-center">
-              <div className="text-xl font-semibold mb-2 text-white">Couldn’t load</div>
+              <div className="text-xl font-semibold mb-2 text-white">
+                {feedError === "Please sign in to follow users." ? "Please sign in" : "Couldn’t load"}
+              </div>
               <p className="text-sm text-white/70">{feedError}</p>
               <button
-                onClick={() => loadFeedFirstPage()}
+                onClick={() =>
+                  feedError === "Please sign in to follow users."
+                    ? router.push("/login")
+                    : loadFeedFirstPage()
+                }
                 className="mt-4 px-4 py-2 rounded border border-white/20 bg-white/10 hover:bg-white/15 text-sm text-white"
               >
-                Retry
+                {feedError === "Please sign in to follow users." ? "Sign in" : "Retry"}
               </button>
             </div>
           </div>
