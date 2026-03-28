@@ -20,7 +20,6 @@ type TakeRow = {
   parent_take_id?: string | null;
   is_challengeable?: boolean | null;
   topics?: { name: string }[] | null;
-
   topic_name?: string | null;
 };
 
@@ -580,6 +579,25 @@ export default function TakesClient() {
     return rows.filter((t) => !blocked.has(String(t.id)));
   }
 
+  async function loadGuestFeedPage(cursor: string | null) {
+    let query = supabase
+      .from("takes")
+      .select(
+        "id, user_id, topic_id, stance, playback_id, created_at, parent_take_id, is_challengeable, topics(name)"
+      )
+      .eq("status", "ready")
+      .not("playback_id", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (cursor) {
+      query = query.lt("created_at", cursor);
+    }
+
+    const { data, error } = await query;
+    return { data, error };
+  }
+
   async function loadFeedFirstPage() {
     setFeedError(null);
     setLoadingFeed(true);
@@ -589,18 +607,10 @@ export default function TakesClient() {
     } = await supabase.auth.getUser();
 
     if (!user) {
-      const p_tab = "explore";
-      const p_cursor = null;
-      const p_limit = 50;
-
-      const { data, error } = await supabase.rpc("get_ranked_feed", {
-        p_tab,
-        p_cursor,
-        p_limit,
-      });
+      const { data, error } = await loadGuestFeedPage(null);
 
       if (error) {
-        console.error("get_ranked_feed error", error);
+        console.error("guest feed load error", error);
         setFeedError("Could not load feed.");
         setTakes([]);
         setLoadingFeed(false);
@@ -614,7 +624,7 @@ export default function TakesClient() {
 
       const last = rows[rows.length - 1];
       setFeedCursorCreatedAt(last?.created_at ?? null);
-      setFeedHasMore(rows.length >= p_limit);
+      setFeedHasMore(rows.length >= 50);
       setLoadingFeed(false);
       return;
     }
@@ -667,18 +677,10 @@ export default function TakesClient() {
     } = await supabase.auth.getUser();
 
     if (!user) {
-      const p_tab = "explore";
-      const p_cursor = feedCursorCreatedAt;
-      const p_limit = 50;
-
-      const { data, error } = await supabase.rpc("get_ranked_feed", {
-        p_tab,
-        p_cursor,
-        p_limit,
-      });
+      const { data, error } = await loadGuestFeedPage(feedCursorCreatedAt);
 
       if (error) {
-        console.error("get_ranked_feed load more error", error);
+        console.error("guest feed load more error", error);
         setFeedLoadingMore(false);
         return;
       }
@@ -694,7 +696,7 @@ export default function TakesClient() {
 
       const last = rows[rows.length - 1];
       setFeedCursorCreatedAt(last?.created_at ?? feedCursorCreatedAt);
-      setFeedHasMore(rows.length >= p_limit);
+      setFeedHasMore(rows.length >= 50);
       setFeedLoadingMore(false);
       return;
     }
