@@ -25,25 +25,20 @@ export default function TakesTopicsRibbon() {
   const [loading, setLoading] = useState(true);
 
   async function loadTopics() {
-    setLoading(true);
+  setLoading(true);
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-    if (!user) {
-      setTopics([]);
-      setLoading(false);
-      return;
-    }
-
+  // 🔥 IF NOT LOGGED IN → LOAD ALL TOPICS
+  if (!user) {
     const { data, error } = await supabase
-      .from("user_topics")
-      .select("topic_id, topics(name)")
-      .eq("user_id", user.id);
+      .from("topics")
+      .select("id, name");
 
     if (error) {
-      console.error("Failed to load user topics", error);
+      console.error("Failed to load all topics", error);
       setTopics([]);
       setLoading(false);
       return;
@@ -51,10 +46,8 @@ export default function TakesTopicsRibbon() {
 
     const mapped = (data ?? [])
       .map((row: any) => {
-        const id = row?.topic_id;
-        const name = row?.topics?.name;
-        if (typeof id !== "number" || typeof name !== "string") return null;
-        return { id, name };
+        if (typeof row.id !== "number" || typeof row.name !== "string") return null;
+        return { id: row.id, name: row.name };
       })
       .filter(isTopicRow);
 
@@ -62,7 +55,36 @@ export default function TakesTopicsRibbon() {
 
     setTopics(mapped);
     setLoading(false);
+    return;
   }
+
+  // ✅ EXISTING LOGIC (unchanged)
+  const { data, error } = await supabase
+    .from("user_topics")
+    .select("topic_id, topics(name)")
+    .eq("user_id", user.id);
+
+  if (error) {
+    console.error("Failed to load user topics", error);
+    setTopics([]);
+    setLoading(false);
+    return;
+  }
+
+  const mapped = (data ?? [])
+    .map((row: any) => {
+      const id = row?.topic_id;
+      const name = row?.topics?.name;
+      if (typeof id !== "number" || typeof name !== "string") return null;
+      return { id, name };
+    })
+    .filter(isTopicRow);
+
+  mapped.sort((a, b) => a.name.localeCompare(b.name));
+
+  setTopics(mapped);
+  setLoading(false);
+}
 
   useEffect(() => {
     loadTopics();

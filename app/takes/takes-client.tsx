@@ -156,6 +156,10 @@ export default function TakesClient() {
   const wheelLockRef = useRef(false);
   const wheelTimerRef = useRef<number | null>(null);
 
+  const [guestSwipeCount, setGuestSwipeCount] = useState(0);
+  const [showGuestPrompt, setShowGuestPrompt] = useState(false);
+  const [guestPromptDismissed, setGuestPromptDismissed] = useState(false);
+
   const showingThread = viewMode.kind === "thread";
   const showingOriginal = viewMode.kind === "original";
 
@@ -417,6 +421,11 @@ export default function TakesClient() {
   }, []);
 
   useEffect(() => {
+    const dismissed = window.localStorage.getItem("takes_guest_prompt_dismissed");
+    if (dismissed === "1") setGuestPromptDismissed(true);
+  }, []);
+
+  useEffect(() => {
     (async () => {
       const {
         data: { user },
@@ -424,6 +433,12 @@ export default function TakesClient() {
       setUserId(user?.id ?? null);
     })();
   }, []);
+
+  useEffect(() => {
+    if (userId) {
+      setShowGuestPrompt(false);
+    }
+  }, [userId]);
 
   async function loadNotInterested() {
     const {
@@ -574,7 +589,32 @@ export default function TakesClient() {
     } = await supabase.auth.getUser();
 
     if (!user) {
-      setTakes([]);
+      const p_tab = "explore";
+      const p_cursor = null;
+      const p_limit = 50;
+
+      const { data, error } = await supabase.rpc("get_ranked_feed", {
+        p_tab,
+        p_cursor,
+        p_limit,
+      });
+
+      if (error) {
+        console.error("get_ranked_feed error", error);
+        setFeedError("Could not load feed.");
+        setTakes([]);
+        setLoadingFeed(false);
+        return;
+      }
+
+      const rows = ((data ?? []) as any[]).map(normalizeTopicsField);
+
+      setTakes(rows);
+      setActiveIndex(0);
+
+      const last = rows[rows.length - 1];
+      setFeedCursorCreatedAt(last?.created_at ?? null);
+      setFeedHasMore(rows.length >= p_limit);
       setLoadingFeed(false);
       return;
     }
@@ -625,7 +665,36 @@ export default function TakesClient() {
     const {
       data: { user },
     } = await supabase.auth.getUser();
+
     if (!user) {
+      const p_tab = "explore";
+      const p_cursor = feedCursorCreatedAt;
+      const p_limit = 50;
+
+      const { data, error } = await supabase.rpc("get_ranked_feed", {
+        p_tab,
+        p_cursor,
+        p_limit,
+      });
+
+      if (error) {
+        console.error("get_ranked_feed load more error", error);
+        setFeedLoadingMore(false);
+        return;
+      }
+
+      const rows = ((data ?? []) as any[]).map(normalizeTopicsField);
+
+      setTakes((prev) => {
+        const seen = new Set(prev.map((t) => t.id));
+        const merged = [...prev];
+        for (const r of rows) if (!seen.has(r.id)) merged.push(r);
+        return merged;
+      });
+
+      const last = rows[rows.length - 1];
+      setFeedCursorCreatedAt(last?.created_at ?? feedCursorCreatedAt);
+      setFeedHasMore(rows.length >= p_limit);
       setFeedLoadingMore(false);
       return;
     }
@@ -861,6 +930,16 @@ export default function TakesClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTake?.id]);
 
+  function maybeTriggerGuestPrompt() {
+    if (userId) return;
+    if (guestPromptDismissed) return;
+    setGuestSwipeCount((prev) => {
+      const next = prev + 1;
+      if (next >= 3) setShowGuestPrompt(true);
+      return next;
+    });
+  }
+
   function nextRaw() {
     if (showingOriginal) return;
 
@@ -870,6 +949,7 @@ export default function TakesClient() {
     }
 
     setActiveIndex((i) => Math.min(i + 1, Math.max(0, takes.length - 1)));
+    maybeTriggerGuestPrompt();
   }
 
   function prevRaw() {
@@ -1623,6 +1703,35 @@ export default function TakesClient() {
           </div>
         )}
       </div>
+
+      {!userId && showGuestPrompt && (
+        <div className="fixed bottom-5 left-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 rounded-2xl border border-white/15 bg-black/80 backdrop-blur-md px-4 py-3 shadow-2xl">
+          <div className="text-sm font-medium text-white">Sign in to customize your feed</div>
+          <p className="mt-1 text-xs text-white/70">
+            Save topics, filter what you see, react to takes, and make Debate.Me feel more yours.
+          </p>
+
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button
+              onClick={() => {
+                setShowGuestPrompt(false);
+                setGuestPromptDismissed(true);
+                window.localStorage.setItem("takes_guest_prompt_dismissed", "1");
+              }}
+              className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-white/80 hover:bg-white/10"
+            >
+              Not now
+            </button>
+
+            <button
+              onClick={() => router.push("/login")}
+              className="rounded-full border border-emerald-500/30 bg-emerald-600/15 px-3 py-1.5 text-xs text-white hover:bg-emerald-600/20"
+            >
+              Sign in
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="fixed right-6 top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3">
         <button
